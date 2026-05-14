@@ -1,0 +1,12 @@
+.env
+data/
+node_modules/
+__pycache__/
+*.pyc
+.venv/
+*.egg-info/
+dist/
+build/
+.DS_Store
+pgdata/
+acestep-cache/

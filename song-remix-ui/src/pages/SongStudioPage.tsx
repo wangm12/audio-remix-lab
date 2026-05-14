@@ -1,0 +1,120 @@
+import { useState, useEffect } from "react";
+import { useQuery } from "@tanstack/react-query";
+import { useParams } from "@tanstack/react-router";
+import { ArrowLeft, Loader2 } from "lucide-react";
+import { Link } from "@tanstack/react-router";
+import { api } from "@/lib/api";
+import { StylePicker } from "@/components/studio/StylePicker";
+import { EngineConfig } from "@/components/studio/EngineConfig";
+import { GeneratePanel } from "@/components/studio/GeneratePanel";
+import { LyricsEditor } from "@/components/studio/LyricsEditor";
+import { TaskTimeline } from "@/components/library/TaskTimeline";
+import type { Preset, GenerateRequest } from "@/lib/types";
+
+export function SongStudioPage() {
+  const { songId } = useParams({ from: "/studio/$songId" });
+  const { data: song, isLoading } = useQuery({
+    queryKey: ["song", songId],
+    queryFn: () => api.songs.get(songId),
+  });
+
+  const [selectedPreset, setSelectedPreset] = useState<Preset | null>(null);
+  const [customPrompt, setCustomPrompt] = useState("");
+  const [engine, setEngine] = useState("acestep");
+  const [coverStrength, setCoverStrength] = useState(0.5);
+  const [vocalGender, setVocalGender] = useState("auto");
+  const [vocalLanguage, setVocalLanguage] = useState("zh");
+  const [lyrics, setLyrics] = useState("");
+
+  useEffect(() => {
+    if (song?.lyrics) setLyrics(song.lyrics);
+  }, [song?.lyrics]);
+
+  if (isLoading) {
+    return (
+      <div className="flex items-center justify-center h-64">
+        <Loader2 className="w-6 h-6 text-brand animate-spin" />
+      </div>
+    );
+  }
+
+  if (!song) {
+    return (
+      <div className="max-w-3xl mx-auto px-6 py-8">
+        <p className="text-text-secondary">Song not found.</p>
+      </div>
+    );
+  }
+
+  const hasStyle = selectedPreset || customPrompt.trim();
+  const generateRequest: GenerateRequest | null = hasStyle
+    ? {
+        engine,
+        ...(selectedPreset
+          ? { style_preset_id: selectedPreset.id }
+          : { style_prompt: customPrompt.trim() }),
+        vocal_gender: vocalGender,
+        lyrics: lyrics.trim() || undefined,
+        engine_params: { cover_strength: coverStrength, vocal_language: vocalLanguage },
+      }
+    : null;
+
+  return (
+    <div className="max-w-3xl mx-auto px-6 py-8">
+      <Link
+        to="/studio"
+        className="inline-flex items-center gap-1 text-sm text-text-secondary hover:text-text-primary mb-4 transition-colors"
+      >
+        <ArrowLeft className="w-4 h-4" />
+        New song
+      </Link>
+
+      <div className="mb-8">
+        <h1 className="font-display text-3xl font-bold">{song.title}</h1>
+        {song.artist && (
+          <p className="text-text-secondary mt-1">{song.artist}</p>
+        )}
+      </div>
+
+      <div className="space-y-8">
+        <StylePicker
+          selected={selectedPreset?.id ?? null}
+          customPrompt={customPrompt}
+          onSelect={(p) => { setSelectedPreset(p); setCustomPrompt(""); }}
+          onCustom={(p) => { setCustomPrompt(p); setSelectedPreset(null); }}
+        />
+        <LyricsEditor
+          songId={songId}
+          initialLyrics={song.lyrics ?? ""}
+          lyrics={lyrics}
+          onLyricsChange={setLyrics}
+          hasSourceAudio={!!song.source_audio_path}
+        />
+        <EngineConfig
+          engine={engine}
+          onEngineChange={setEngine}
+          coverStrength={coverStrength}
+          onCoverStrengthChange={setCoverStrength}
+          vocalGender={vocalGender}
+          onVocalGenderChange={setVocalGender}
+          vocalLanguage={vocalLanguage}
+          onVocalLanguageChange={setVocalLanguage}
+        />
+        <GeneratePanel
+          songId={songId}
+          request={generateRequest}
+          disabled={!hasStyle}
+        />
+
+        {song.tasks && song.tasks.length > 0 && (
+          <div>
+            <h2 className="font-display text-xl font-semibold mb-4">
+              Generation history
+            </h2>
+            <TaskTimeline tasks={song.tasks} />
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
