@@ -1,5 +1,7 @@
 # Song Remix Studio
 
+[English](README.md) | [简体中文](README.zh-CN.md)
+
 Song Remix Studio is a full-stack web app for turning source tracks into remixes. It lets users upload audio, manage songs and lyrics, pick a style preset or custom prompt, generate remixes through local or cloud engines, and listen back to generated results from a library.
 
 ## Features
@@ -55,21 +57,27 @@ git clone --recurse-submodules https://github.com/wangm12/audio-remix-lab.git
 git submodule update --init --recursive
 ```
 
-Copy the sample environment file:
+Create `.env`, install dependencies, start PostgreSQL, run migrations, and launch the backend and frontend:
+
+```bash
+make dev
+```
+
+Open the app at http://localhost:5173. The Vite dev server proxies `/api` requests to the backend at http://localhost:8000.
+
+You can also start services individually:
+
+```bash
+make postgres
+make backend
+make frontend
+```
+
+Manual setup is still available if you prefer to run each command yourself:
 
 ```bash
 cp .env.example .env
-```
-
-Start PostgreSQL with Docker Compose:
-
-```bash
 docker compose up -d postgres
-```
-
-Set up the backend:
-
-```bash
 cd song-remix-backend
 python -m venv .venv
 source .venv/bin/activate
@@ -85,8 +93,6 @@ cd song-remix-ui
 npm install
 npm run dev
 ```
-
-Open the app at http://localhost:5173. The Vite dev server proxies `/api` requests to the backend at http://localhost:8000.
 
 ## Environment Variables
 
@@ -153,7 +159,20 @@ alembic revision --autogenerate -m "describe change"
 
 ## Development Commands
 
-Frontend:
+Make targets:
+
+```bash
+make help       # list available commands
+make dev        # one-command local startup
+make frontend   # frontend only
+make backend    # backend only
+make postgres   # database only
+make migrate    # run Alembic migrations
+make seed       # seed style presets
+make down       # stop Docker Compose services
+```
+
+Frontend scripts:
 
 ```bash
 cd song-remix-ui
