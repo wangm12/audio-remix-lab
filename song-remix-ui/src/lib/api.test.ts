@@ -1,8 +1,8 @@
 import { http, HttpResponse } from "msw";
 import { describe, expect, it, vi } from "vitest";
 import { server } from "@/test/server";
-import { api, authRedirect } from "./api";
-import { getToken, setToken } from "./auth";
+import { api, authRedirect, authSession } from "./api";
+import { clearToken, getToken, setToken } from "./auth";
 
 describe("api request helper", () => {
   it("sends the bearer token from localStorage", async () => {
@@ -117,6 +117,91 @@ describe("api request helper", () => {
     await expect(api.songs.list()).rejects.toThrow("session has expired");
     expect(getToken()).toBeNull();
     expect(redirect).toHaveBeenCalledOnce();
+    redirect.mockRestore();
+  });
+
+  it("does not let a delayed 401 from identity A clear identity B", async () => {
+    let finish: ((response: Response) => void) | undefined;
+    let started: (() => void) | undefined;
+    setToken("identity-a");
+    const redirect = vi.spyOn(authRedirect, "toLogin").mockImplementation(() => {});
+    const invalidated = vi.fn();
+    const unsubscribe = authSession.subscribeInvalidation(invalidated);
+    server.use(http.get("/api/tasks", () => new Promise((resolve) => {
+      finish = resolve;
+      started?.();
+    })));
+    const request = api.tasks.list();
+    await new Promise<void>((resolve) => { started = resolve; if (finish) resolve(); });
+    setToken("identity-b");
+    finish?.(HttpResponse.json({ detail: "expired" }, { status: 401 }));
+    await expect(request).rejects.toMatchObject({ status: 401 });
+    expect(getToken()).toBe("identity-b");
+    expect(invalidated).not.toHaveBeenCalled();
+    expect(redirect).not.toHaveBeenCalled();
+    unsubscribe();
+    redirect.mockRestore();
+  });
+
+  it("does not publish a successful response after its captured identity is replaced", async () => {
+    let finish: ((response: Response) => void) | undefined;
+    let started: (() => void) | undefined;
+    setToken("identity-a");
+    server.use(http.get("/api/songs", () => new Promise((resolve) => {
+      finish = resolve;
+      started?.();
+    })));
+    const request = api.songs.list();
+    await new Promise<void>((resolve) => { started = resolve; if (finish) resolve(); });
+    setToken("identity-b");
+    finish?.(HttpResponse.json([{ id: "a-owned-song" }]));
+    await expect(request).rejects.toThrow(/identity|session|current/i);
+    expect(getToken()).toBe("identity-b");
+  });
+
+  it("does not let a request started without a token invalidate a later identity", async () => {
+    let finish: ((response: Response) => void) | undefined;
+    let started: (() => void) | undefined;
+    clearToken();
+    const redirect = vi.spyOn(authRedirect, "toLogin").mockImplementation(() => {});
+    const invalidated = vi.fn();
+    const unsubscribe = authSession.subscribeInvalidation(invalidated);
+    server.use(http.get("/api/tasks", () => new Promise((resolve) => {
+      finish = resolve;
+      started?.();
+    })));
+    const request = api.tasks.list();
+    await new Promise<void>((resolve) => { started = resolve; if (finish) resolve(); });
+    setToken("identity-b");
+    finish?.(HttpResponse.json({ detail: "expired" }, { status: 401 }));
+    await expect(request).rejects.toMatchObject({ status: 401 });
+    expect(getToken()).toBe("identity-b");
+    expect(invalidated).not.toHaveBeenCalled();
+    expect(redirect).not.toHaveBeenCalled();
+    unsubscribe();
+    redirect.mockRestore();
+  });
+
+  it("invalidates and redirects at most once for concurrent current-session 401 responses", async () => {
+    const finishes: Array<(response: Response) => void> = [];
+    let startedCount = 0;
+    let ready: (() => void) | undefined;
+    setToken("identity-a");
+    const redirect = vi.spyOn(authRedirect, "toLogin").mockImplementation(() => {});
+    const invalidated = vi.fn();
+    const unsubscribe = authSession.subscribeInvalidation(invalidated);
+    server.use(
+      http.get("/api/tasks", () => new Promise((resolve) => { finishes.push(resolve); if (++startedCount === 2) ready?.(); })),
+      http.get("/api/songs", () => new Promise((resolve) => { finishes.push(resolve); if (++startedCount === 2) ready?.(); })),
+    );
+    const requests = [api.tasks.list(), api.songs.list()];
+    await new Promise<void>((resolve) => { ready = resolve; if (startedCount === 2) resolve(); });
+    finishes.forEach((finish) => finish(HttpResponse.json({ detail: "expired" }, { status: 401 })));
+    await Promise.all(requests.map((request) => expect(request).rejects.toMatchObject({ status: 401 })));
+    expect(getToken()).toBeNull();
+    expect(invalidated).toHaveBeenCalledOnce();
+    expect(redirect).toHaveBeenCalledOnce();
+    unsubscribe();
     redirect.mockRestore();
   });
 

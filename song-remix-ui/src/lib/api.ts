@@ -1,4 +1,4 @@
-import { getToken, clearToken } from "./auth";
+import { captureAuthSession, clearTokenIfCurrent, isAuthSessionCurrent, type AuthSessionLease } from "./auth";
 import type {
   User,
   Song,
@@ -85,14 +85,14 @@ export const authSession = {
 
 async function request<T>(
   path: string,
-  options: RequestInit = {}
+  options: RequestInit = {},
+  session: AuthSessionLease = captureAuthSession(),
 ): Promise<T> {
-  const token = getToken();
   const headers: Record<string, string> = {
     ...(options.headers as Record<string, string>),
   };
-  if (token) {
-    headers["Authorization"] = `Bearer ${token}`;
+  if (session.token) {
+    headers["Authorization"] = `Bearer ${session.token}`;
   }
   if (!(options.body instanceof FormData)) {
     headers["Content-Type"] = "application/json";
@@ -102,9 +102,10 @@ async function request<T>(
 
   if (res.status === 401) {
     if (!AUTH_FORM_PATHS.has(path)) {
-      clearToken();
-      for (const invalidate of authInvalidationListeners) invalidate();
-      authRedirect.toLogin();
+      if (clearTokenIfCurrent(session)) {
+        for (const invalidate of authInvalidationListeners) invalidate();
+        authRedirect.toLogin();
+      }
     } else {
       const body = await res.json().catch(() => ({}));
       throw parseError(res.status, body);
@@ -112,6 +113,9 @@ async function request<T>(
     throw new ApiError(statusMessage(401), 401);
   }
   if (res.status === 204) return undefined as T;
+  if (!isAuthSessionCurrent(session)) {
+    throw new DOMException("Response belongs to a replaced session", "AbortError");
+  }
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
     throw parseError(res.status, body);
@@ -137,7 +141,7 @@ export const api = {
         body: JSON.stringify(data),
       }),
     me: () => request<User>("/auth/me"),
-    logout: () => request<void>("/auth/logout", { method: "POST" }),
+    logout: (session?: AuthSessionLease) => request<void>("/auth/logout", { method: "POST" }, session),
   },
 
   songs: {

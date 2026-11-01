@@ -1,13 +1,21 @@
-import { useRef, useEffect, useState } from "react";
+import { useRef, useEffect, useState, useCallback } from "react";
 import { Play, Pause, X, Music2 } from "lucide-react";
-import { useAudioPlayer } from "@/hooks/useAudioPlayer";
+import { registerAudioElement, useAudioPlayer } from "@/hooks/useAudioPlayer";
 
 export function NowPlaying() {
   const { trackId, trackTitle, audioUrl, isPlaying, toggle, stop } =
     useAudioPlayer();
   const audioRef = useRef<HTMLAudioElement>(null);
-  const [progress, setProgress] = useState(0);
-  const [duration, setDuration] = useState(0);
+  const releaseMediaRef = useRef<(() => void) | null>(null);
+  const [metrics, setMetrics] = useState({ audioUrl: null as string | null, progress: 0, duration: 0 });
+  const progress = metrics.audioUrl === audioUrl ? metrics.progress : 0;
+  const duration = metrics.audioUrl === audioUrl ? metrics.duration : 0;
+  const attachAudio = useCallback((audio: HTMLAudioElement | null) => {
+    if (audioRef.current === audio) return;
+    releaseMediaRef.current?.();
+    audioRef.current = audio;
+    releaseMediaRef.current = audio ? registerAudioElement(audio) : null;
+  }, []);
 
   useEffect(() => {
     const audio = audioRef.current;
@@ -22,8 +30,16 @@ export function NowPlaying() {
   useEffect(() => {
     const audio = audioRef.current;
     if (!audio) return;
-    const onTime = () => setProgress(audio.currentTime);
-    const onDur = () => setDuration(audio.duration || 0);
+    const onTime = () => setMetrics((current) => ({
+      audioUrl,
+      progress: audio.currentTime,
+      duration: current.audioUrl === audioUrl ? current.duration : audio.duration || 0,
+    }));
+    const onDur = () => setMetrics((current) => ({
+      audioUrl,
+      progress: current.audioUrl === audioUrl ? current.progress : 0,
+      duration: audio.duration || 0,
+    }));
     const onEnd = () => useAudioPlayer.getState().pause();
     audio.addEventListener("timeupdate", onTime);
     audio.addEventListener("loadedmetadata", onDur);
@@ -58,7 +74,7 @@ export function NowPlaying() {
         />
       </div>
       <div className="flex items-center gap-3 px-4 py-2.5 max-w-screen-xl mx-auto">
-        <audio ref={audioRef} src={audioUrl} preload="metadata" />
+        <audio ref={attachAudio} src={audioUrl} preload="metadata" />
         <button
           onClick={toggle}
           className="w-8 h-8 flex items-center justify-center rounded-full bg-brand text-surface-0 hover:bg-brand-bright transition-colors shrink-0"

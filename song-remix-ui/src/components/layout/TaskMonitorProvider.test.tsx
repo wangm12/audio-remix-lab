@@ -63,8 +63,9 @@ function LateSongQuery({ songId }: { songId: string }) {
   return <p data-testid="song-result">{data?.tasks?.map((item) => item.id).join(",") || "empty"}</p>;
 }
 
-function renderMonitor() {
+function renderMonitor(token = "monitor-test-owner") {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: Infinity }, mutations: { retry: false } } });
+  setToken(token);
   const view = render(<QueryClientProvider client={client}><TaskMonitorProvider><Consumer /></TaskMonitorProvider></QueryClientProvider>);
   return { ...view, client };
 }
@@ -215,6 +216,7 @@ describe("app-shell task monitor", () => {
       }),
     );
     vi.stubGlobal("EventSource", FakeEventSource as unknown as typeof EventSource);
+    setToken("monitor-test-owner");
     const client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: Infinity } } });
     const view = render(<StrictMode><QueryClientProvider client={client}><TaskMonitorProvider><Consumer /></TaskMonitorProvider></QueryClientProvider></StrictMode>);
     await waitFor(() => expect(FakeEventSource.instances.filter((source) => !source.closed)).toHaveLength(1));
@@ -285,6 +287,7 @@ describe("app-shell task monitor", () => {
         : HttpResponse.json(song)),
     );
     const client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: Infinity } } });
+    setToken("monitor-test-owner");
     const view = render(<QueryClientProvider client={client}><TaskMonitorProvider><><Consumer /><LateSongQuery songId="song-a" /></></TaskMonitorProvider></QueryClientProvider>);
     await waitFor(() => expect(resolveFirstSong).toBeDefined());
     client.setQueryData(["task", stale.id], stale);
@@ -342,7 +345,7 @@ describe("app-shell task monitor", () => {
         if (!owner.isGenerationCurrent(captured)) return;
         const visible = owner.visibleSong(value, captured);
         if (visible) view.client.setQueryData(["song", "song-a"], visible);
-      });
+      }).catch((error: unknown) => { if (!(error instanceof DOMException && error.name === "AbortError")) throw error; });
       await waitFor(() => expect(finishSong).toBeDefined());
       if (end === "unmount") view.unmount();
       else if (end === "logout") act(() => owner.stopAll());
@@ -397,6 +400,41 @@ describe("app-shell task monitor", () => {
     act(() => { other.progress({ status: "completed" }); other.emit("error"); });
     expect(currentMonitor.activeTasks).toEqual([]);
     expect(currentMonitor.recoveryIds).toEqual([]);
+    view.unmount();
+  });
+
+  it("keeps the replacement identity monitor running when an old request returns 401", async () => {
+    let finishOldRequest: ((response: Response) => void) | undefined;
+    let oldRequestStarted: (() => void) | undefined;
+    server.use(
+      http.get("/api/tasks", ({ request }) => HttpResponse.json([
+        request.headers.get("Authorization") === "Bearer identity-b"
+          ? task("identity-b-task", "song-b", "processing")
+          : task("identity-a-task", "song-a", "processing"),
+      ])),
+      http.get("/api/tasks/late-a", () => new Promise((resolve) => {
+        finishOldRequest = resolve;
+        oldRequestStarted?.();
+      })),
+    );
+    vi.stubGlobal("EventSource", FakeEventSource as unknown as typeof EventSource);
+    const redirect = vi.spyOn(authRedirect, "toLogin").mockImplementation(() => {});
+    const view = renderMonitor("identity-a");
+    await waitFor(() => expect(FakeEventSource.instances.some((source) => source.url.includes("identity-a-task") && !source.closed)).toBe(true));
+    const release = new Promise<void>((resolve) => { oldRequestStarted = resolve; });
+    const stale = api.tasks.get("late-a");
+    await release;
+
+    act(() => setToken("identity-b"));
+    await waitFor(() => expect(FakeEventSource.instances.some((source) => source.url.includes("identity-b-task") && !source.closed)).toBe(true));
+    finishOldRequest?.(HttpResponse.json({ detail: "expired" }, { status: 401 }));
+    await expect(stale).rejects.toMatchObject({ status: 401 });
+
+    expect(getToken()).toBe("identity-b");
+    expect(redirect).not.toHaveBeenCalled();
+    expect(FakeEventSource.instances.some((source) => source.url.includes("identity-b-task") && !source.closed)).toBe(true);
+    expect(currentMonitor.activeTasks.map((item) => item.id)).toContain("identity-b-task");
+    expect(FakeEventSource.instances.filter((source) => source.url.includes("identity-a-task")).every((source) => source.closed)).toBe(true);
     view.unmount();
   });
 });

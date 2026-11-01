@@ -7,6 +7,7 @@ import type { Task } from "@/lib/types";
 import { server } from "@/test/server";
 import { TaskMonitorProvider } from "@/components/layout/TaskMonitorProvider";
 import { useTaskMonitor, type TaskMonitorValue } from "@/components/layout/TaskMonitorContext";
+import { setToken } from "@/lib/auth";
 import { TaskTimeline } from "./TaskTimeline";
 
 const task: Task = { id: "task-old", song_id: "song-1", engine: "acestep", status: "processing", style_prompt: null,
@@ -23,6 +24,7 @@ describe("TaskTimeline deletion feedback", () => {
         : new HttpResponse(null, { status: 204 })),
     );
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    setToken("timeline-test-owner");
     client.setQueryData(["song", "song-1"], { id: "song-1", tasks: [task] });
     let monitor: TaskMonitorValue;
     function ConnectedTimeline() {

@@ -1,8 +1,9 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/api";
-import { setToken, clearToken, isAuthenticated } from "@/lib/auth";
+import { captureAuthSession, clearTokenIfCurrent, setToken, isAuthenticated } from "@/lib/auth";
 import { useNavigate } from "@tanstack/react-router";
 import { useTaskMonitor } from "@/components/layout/TaskMonitorContext";
+import { useAudioPlayer } from "@/hooks/useAudioPlayer";
 
 export function useUser() {
   return useQuery({
@@ -43,15 +44,14 @@ export function useLogout() {
   const qc = useQueryClient();
   const navigate = useNavigate();
   const monitor = useTaskMonitor();
-  return async () => {
+  return () => {
+    const session = captureAuthSession();
     monitor.stopAll();
-    try {
-      await api.auth.logout();
-    } catch {
-      // The media cookie expires on its own; local logout must still happen.
-    }
-    clearToken();
+    useAudioPlayer.getState().stop();
+    const request = api.auth.logout(session).catch(() => undefined);
+    clearTokenIfCurrent(session);
     qc.clear();
-    navigate({ to: "/login" });
+    void navigate({ to: "/login" });
+    void request;
   };
 }

@@ -27,7 +27,7 @@ function TaskWatcher({ task }: { task: Task }) {
   return null;
 }
 
-export function TaskMonitorProvider({ children }: { children: ReactNode }) {
+export function TaskMonitorProvider({ children, isEnabled = true }: { children: ReactNode; isEnabled?: boolean }) {
   const qc = useQueryClient();
   const generation = useRef(0);
   const tokenIdentity = useRef(getToken());
@@ -39,7 +39,8 @@ export function TaskMonitorProvider({ children }: { children: ReactNode }) {
   const stopped = useRef(false);
   const [tasks, setTasks] = useState<Task[]>([]);
   const [recoveryIds, setRecoveryIds] = useState<string[]>([]);
-  const [admitted, setAdmitted] = useState(true);
+  const [admitted, setAdmitted] = useState(false);
+  const [identityRevision, setIdentityRevision] = useState(0);
 
   const captureGeneration = useCallback(() => generation.current, []);
   const isGenerationCurrent = useCallback((captured: number) =>
@@ -189,16 +190,26 @@ export function TaskMonitorProvider({ children }: { children: ReactNode }) {
   useLayoutEffect(() => {
     generation.current += 1;
     tokenIdentity.current = getToken();
-    stopped.current = false;
-    setAdmitted(true);
+    canonical.current.clear();
+    tombstones.current.clear();
+    deletedSongs.current.clear();
+    announced.current.clear();
+    const shouldAdmit = isEnabled && tokenIdentity.current !== null;
+    if (!shouldAdmit) invalidateOwner(true);
+    stopped.current = !shouldAdmit;
+    setAdmitted(shouldAdmit);
     const unsubscribe = authSession.subscribeInvalidation(stopAll);
-    const unsubscribeIdentity = subscribeAuthIdentity(stopAll);
+    const unsubscribeIdentity = subscribeAuthIdentity(() => {
+      invalidateOwner(true);
+      qc.clear();
+      setIdentityRevision((revision) => revision + 1);
+    });
     return () => {
       unsubscribe();
       unsubscribeIdentity();
       invalidateOwner(false);
     };
-  }, [invalidateOwner, stopAll]);
+  }, [identityRevision, invalidateOwner, isEnabled, qc, stopAll]);
   const setRecovery = useCallback((id: string, recovering: boolean) => {
     const current = canonical.current.get(id);
     if (recovering && (stopped.current || tombstones.current.has(id) || !current || terminal(current.status))) return;

@@ -7,6 +7,7 @@ import { useEffect } from "react";
 import { LibraryPage } from "./LibraryPage";
 import { TaskMonitorProvider } from "@/components/layout/TaskMonitorProvider";
 import { useTaskMonitor, type TaskMonitorValue } from "@/components/layout/TaskMonitorContext";
+import { setToken } from "@/lib/auth";
 import type { Task } from "@/lib/types";
 import { server } from "@/test/server";
 
@@ -33,6 +34,7 @@ describe("Library song deletion feedback", () => {
         : new HttpResponse(null, { status: 204 })),
     );
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    setToken("library-test-owner");
     const root = createRootRoute({ component: MonitoredLibrary });
     const router = createRouter({ routeTree: root, history: createMemoryHistory({ initialEntries: ["/"] }) });
     await router.load();

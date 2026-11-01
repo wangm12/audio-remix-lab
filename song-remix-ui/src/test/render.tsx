@@ -17,10 +17,10 @@ export async function renderWithProviders(ui: ReactNode) {
   );
 }
 
-export async function renderApplication(initialEntries: string[] = ["/library"]) {
+export async function renderApplication(initialEntries: string[] = ["/library"], token = "ui-test-token") {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: Infinity }, mutations: { retry: false } } });
   const router = createRouter({ routeTree, history: createMemoryHistory({ initialEntries }) });
-  setToken("ui-test-token");
+  setToken(token);
   await router.load();
   const view = render(<QueryClientProvider client={queryClient}><RouterProvider router={router} /></QueryClientProvider>);
   return { ...view, queryClient, router };

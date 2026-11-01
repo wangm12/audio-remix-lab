@@ -1,7 +1,7 @@
 import { useRef, useState, useEffect } from "react";
 import { Play, Pause, Download, Headphones } from "lucide-react";
 import { api } from "@/lib/api";
-import { useAudioPlayer } from "@/hooks/useAudioPlayer";
+import { registerAudioElement, useAudioPlayer } from "@/hooks/useAudioPlayer";
 
 interface ResultPlayerProps {
   taskId: string;
@@ -20,18 +20,23 @@ export function ResultPlayer({ taskId, songTitle }: ResultPlayerProps) {
   useEffect(() => {
     const audio = audioRef.current;
     if (!audio) return;
+    const unregisterMedia = registerAudioElement(audio);
 
     const onTime = () => setProgress(audio.currentTime);
     const onDur = () => setDuration(audio.duration);
     const onEnd = () => setPlaying(false);
+    const onPause = () => setPlaying(false);
 
     audio.addEventListener("timeupdate", onTime);
     audio.addEventListener("loadedmetadata", onDur);
     audio.addEventListener("ended", onEnd);
+    audio.addEventListener("pause", onPause);
     return () => {
       audio.removeEventListener("timeupdate", onTime);
       audio.removeEventListener("loadedmetadata", onDur);
       audio.removeEventListener("ended", onEnd);
+      audio.removeEventListener("pause", onPause);
+      unregisterMedia();
     };
   }, []);
 
