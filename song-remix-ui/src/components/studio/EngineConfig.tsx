@@ -1,11 +1,6 @@
-import { useQuery } from "@tanstack/react-query";
-import { api } from "@/lib/api";
 import { cn } from "@/lib/cn";
-import { Cpu, Cloud, AlertCircle } from "lucide-react";
 
 interface EngineConfigProps {
-  engine: string;
-  onEngineChange: (engine: string) => void;
   coverStrength: number;
   onCoverStrengthChange: (v: number) => void;
   vocalGender: string;
@@ -14,19 +9,6 @@ interface EngineConfigProps {
   onVocalLanguageChange: (v: string) => void;
 }
 
-const ENGINE_INFO: Record<string, { label: string; icon: typeof Cpu; desc: string }> = {
-  acestep: {
-    label: "ACE-Step",
-    icon: Cpu,
-    desc: "Local AI engine — free, private, offline",
-  },
-  suno: {
-    label: "Suno",
-    icon: Cloud,
-    desc: "Cloud engine — stable, fast, needs account",
-  },
-};
-
 const LANGUAGES = [
   { value: "zh", label: "中文" },
   { value: "en", label: "English" },
@@ -34,9 +16,13 @@ const LANGUAGES = [
   { value: "ko", label: "한국어" },
 ];
 
+const VOCAL_STYLES = [
+  { value: "auto", label: "Auto" },
+  { value: "female", label: "Female" },
+  { value: "male", label: "Male" },
+];
+
 export function EngineConfig({
-  engine,
-  onEngineChange,
   coverStrength,
   onCoverStrengthChange,
   vocalGender,
@@ -44,55 +30,8 @@ export function EngineConfig({
   vocalLanguage,
   onVocalLanguageChange,
 }: EngineConfigProps) {
-  const { data: status } = useQuery({
-    queryKey: ["engines"],
-    queryFn: api.engines.status,
-  });
-
-  const available = status?.available_engines ?? [];
-
   return (
     <div className="space-y-5">
-      <div>
-        <h3 className="font-display text-lg font-semibold mb-3">Engine</h3>
-        <div className="grid grid-cols-2 gap-3">
-          {Object.entries(ENGINE_INFO).map(([key, info]) => {
-            const isAvailable = available.includes(key);
-            const health = status?.health.find((h) => h.engine === key);
-            const Icon = info.icon;
-            return (
-              <button
-                key={key}
-                onClick={() => isAvailable && onEngineChange(key)}
-                disabled={!isAvailable}
-                className={cn(
-                  "flex flex-col p-4 rounded-xl border transition-all text-left",
-                  engine === key
-                    ? "border-brand bg-brand/10 ring-1 ring-brand"
-                    : isAvailable
-                      ? "border-surface-3 bg-surface-1 hover:bg-surface-2"
-                      : "border-surface-3 bg-surface-1 opacity-50 cursor-not-allowed"
-                )}
-              >
-                <div className="flex items-center gap-2 mb-1">
-                  <Icon className="w-4 h-4" />
-                  <span className="text-sm font-semibold">{info.label}</span>
-                  {health && !health.healthy && isAvailable && (
-                    <AlertCircle className="w-3.5 h-3.5 text-error" />
-                  )}
-                </div>
-                <span className="text-xs text-text-muted">{info.desc}</span>
-                {!isAvailable && (
-                  <span className="text-xs text-text-muted mt-1">
-                    Not configured
-                  </span>
-                )}
-              </button>
-            );
-          })}
-        </div>
-      </div>
-
       <div>
         <label htmlFor="cover-strength" className="block text-sm font-medium mb-1.5">
           Original preservation:{" "}
@@ -121,11 +60,15 @@ export function EngineConfig({
       </div>
 
       <div>
-        <label className="block text-sm font-medium mb-1.5">Song language</label>
-        <div className="flex gap-2">
+        <span id="song-language-label" className="block text-sm font-medium mb-1.5">
+          Song language
+        </span>
+        <div role="group" aria-labelledby="song-language-label" className="flex gap-2">
           {LANGUAGES.map((lang) => (
             <button
               key={lang.value}
+              type="button"
+              aria-pressed={vocalLanguage === lang.value}
               onClick={() => onVocalLanguageChange(lang.value)}
               className={cn(
                 "px-4 py-2 rounded-lg text-sm font-medium transition-colors",
@@ -141,15 +84,15 @@ export function EngineConfig({
       </div>
 
       <div>
-        <label className="block text-sm font-medium mb-1.5">Vocal style</label>
-        <div className="flex gap-2">
-          {[
-            { value: "auto", label: "Auto" },
-            { value: "female", label: "Female" },
-            { value: "male", label: "Male" },
-          ].map((g) => (
+        <span id="vocal-style-label" className="block text-sm font-medium mb-1.5">
+          Vocal style
+        </span>
+        <div role="group" aria-labelledby="vocal-style-label" className="flex gap-2">
+          {VOCAL_STYLES.map((g) => (
             <button
               key={g.value}
+              type="button"
+              aria-pressed={vocalGender === g.value}
               onClick={() => onVocalGenderChange(g.value)}
               className={cn(
                 "px-4 py-2 rounded-lg text-sm font-medium transition-colors",
@@ -166,7 +109,6 @@ export function EngineConfig({
           Guides the AI toward a specific vocal tone. "Auto" follows the source audio.
         </p>
       </div>
-
     </div>
   );
 }

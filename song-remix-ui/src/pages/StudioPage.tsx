@@ -12,7 +12,6 @@ export function StudioPage() {
   const [songId, setSongId] = useState<string | null>(null);
   const [selectedPreset, setSelectedPreset] = useState<Preset | null>(null);
   const [customPrompt, setCustomPrompt] = useState("");
-  const [engine, setEngine] = useState("acestep");
   const [coverStrength, setCoverStrength] = useState(0.5);
   const [vocalGender, setVocalGender] = useState("auto");
   const [vocalLanguage, setVocalLanguage] = useState("zh");
@@ -27,7 +26,6 @@ export function StudioPage() {
   const generateRequest: GenerateRequest | null =
     songId && hasStyle
       ? {
-          engine,
           ...(selectedPreset
             ? { style_preset_id: selectedPreset.id }
             : { style_prompt: customPrompt.trim() }),
@@ -54,8 +52,6 @@ export function StudioPage() {
             onCustom={(p) => { setCustomPrompt(p); setSelectedPreset(null); }}
           />
           <EngineConfig
-            engine={engine}
-            onEngineChange={setEngine}
             coverStrength={coverStrength}
             onCoverStrengthChange={setCoverStrength}
             vocalGender={vocalGender}

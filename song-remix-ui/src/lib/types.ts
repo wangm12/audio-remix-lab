@@ -36,7 +36,6 @@ export interface Preset {
   name: string;
   description: string | null;
   acestep_caption: string | null;
-  suno_tags: string | null;
   category_tags: string[] | null;
   cover_art_emoji: string | null;
   is_builtin: boolean;
@@ -44,7 +43,6 @@ export interface Preset {
 }
 
 export interface GenerateRequest {
-  engine: string;
   style_preset_id?: string;
   style_prompt?: string;
   vocal_gender?: string;

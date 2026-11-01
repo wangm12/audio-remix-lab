@@ -40,7 +40,6 @@ export function SongStudioPage() {
 function SongStudio({ song }: { song: Song }) {
   const [selectedPreset, setSelectedPreset] = useState<Preset | null>(null);
   const [customPrompt, setCustomPrompt] = useState("");
-  const [engine, setEngine] = useState("acestep");
   const [coverStrength, setCoverStrength] = useState(0.5);
   const [vocalGender, setVocalGender] = useState("auto");
   const [vocalLanguage, setVocalLanguage] = useState("zh");
@@ -49,7 +48,6 @@ function SongStudio({ song }: { song: Song }) {
   const hasStyle = selectedPreset || customPrompt.trim();
   const generateRequest: GenerateRequest | null = hasStyle
     ? {
-        engine,
         ...(selectedPreset
           ? { style_preset_id: selectedPreset.id }
           : { style_prompt: customPrompt.trim() }),
@@ -91,8 +89,6 @@ function SongStudio({ song }: { song: Song }) {
           hasSourceAudio={!!song.source_audio_path}
         />
         <EngineConfig
-          engine={engine}
-          onEngineChange={setEngine}
           coverStrength={coverStrength}
           onCoverStrengthChange={setCoverStrength}
           vocalGender={vocalGender}
