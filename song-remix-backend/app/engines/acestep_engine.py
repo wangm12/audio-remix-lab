@@ -1,5 +1,7 @@
 import json
+import logging
 import os
+import re
 
 import httpx
 
@@ -11,6 +13,30 @@ GENDER_HINTS = {
     "female": "female vocals, solo female singer",
     "male": "male vocals, solo male singer",
 }
+
+logger = logging.getLogger(__name__)
+
+
+def _public_health_info(payload: object) -> dict:
+    """Project the upstream health contract onto safe public scalar fields."""
+    if not isinstance(payload, dict):
+        return {}
+    data = payload.get("data", payload)
+    if not isinstance(data, dict):
+        return {}
+
+    info = {}
+    if data.get("status") in {"ok", "healthy", "degraded"}:
+        info["status"] = data["status"]
+    if data.get("service") == "ACE-Step API":
+        info["service"] = "ACE-Step API"
+    version = data.get("version")
+    if isinstance(version, str) and re.fullmatch(r"\d{1,3}(?:\.\d{1,3}){0,2}", version):
+        info["version"] = version
+    for key in ("models_initialized", "llm_initialized"):
+        if isinstance(data.get(key), bool):
+            info[key] = data[key]
+    return info
 
 
 class ACEStepEngine(AbstractEngine):
@@ -113,9 +139,10 @@ class ACEStepEngine(AbstractEngine):
         try:
             resp = await self.client.get(f"{self.base_url}/health", timeout=5.0)
             resp.raise_for_status()
-            return {"healthy": True, "engine": self.name, "info": resp.json()}
-        except Exception as e:
-            return {"healthy": False, "engine": self.name, "error": str(e)}
+            return {"healthy": True, "engine": self.name, "info": _public_health_info(resp.json())}
+        except Exception:
+            logger.exception("ACE-Step health check failed")
+            return {"healthy": False, "engine": self.name, "error": "Engine health check failed"}
 
     async def close(self):
         await self.client.aclose()
