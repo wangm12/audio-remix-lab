@@ -1,7 +1,8 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useCallback, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { api, authSession } from "@/lib/api";
+import { getToken, subscribeAuthIdentity } from "@/lib/auth";
 import type { Song, Task } from "@/lib/types";
 import { TaskMonitorContext } from "./TaskMonitorContext";
 import { useTaskStream } from "@/hooks/useTaskStream";
@@ -10,7 +11,7 @@ const active = (task: Task) => task.status === "pending" || task.status === "pro
 const terminal = (status: Task["status"]) => status === "completed" || status === "failed";
 function reconcile(old: Task | undefined, incoming: Task): Task {
   if (!old) return incoming;
-  if (terminal(old.status) && active(incoming)) return old;
+  if (terminal(old.status)) return old;
   if (old.status === "processing" && incoming.status === "pending") return old;
   return { ...old, ...incoming, id: old.id, song_id: old.song_id };
 }
@@ -28,6 +29,8 @@ function TaskWatcher({ task }: { task: Task }) {
 
 export function TaskMonitorProvider({ children }: { children: ReactNode }) {
   const qc = useQueryClient();
+  const generation = useRef(0);
+  const tokenIdentity = useRef(getToken());
   const canonical = useRef(new Map<string, Task>());
   const tombstones = useRef(new Set<string>());
   const deletedSongs = useRef(new Set<string>());
@@ -36,6 +39,11 @@ export function TaskMonitorProvider({ children }: { children: ReactNode }) {
   const stopped = useRef(false);
   const [tasks, setTasks] = useState<Task[]>([]);
   const [recoveryIds, setRecoveryIds] = useState<string[]>([]);
+  const [admitted, setAdmitted] = useState(true);
+
+  const captureGeneration = useCallback(() => generation.current, []);
+  const isGenerationCurrent = useCallback((captured: number) =>
+    !stopped.current && captured === generation.current && tokenIdentity.current === getToken(), []);
 
   const stopWatchers = useCallback((id: string) => {
     for (const stop of watchers.current.get(id) ?? []) stop();
@@ -159,19 +167,38 @@ export function TaskMonitorProvider({ children }: { children: ReactNode }) {
       if (query.queryKey[0] === "song" && cached?.id === songId && query.queryKey[1] !== songId) qc.removeQueries({ queryKey: query.queryKey, exact: true });
     }
   }, [forgetTask, qc]);
-  const stopAll = useCallback(() => {
+  const invalidateOwner = useCallback((cancelReads: boolean) => {
+    if (stopped.current) return;
     stopped.current = true;
-    for (const id of canonical.current.keys()) { tombstones.current.add(id); stopWatchers(id); }
+    generation.current += 1;
+    setAdmitted(false);
+    for (const id of canonical.current.keys()) stopWatchers(id);
     for (const id of watchers.current.keys()) stopWatchers(id);
     canonical.current.clear();
+    announced.current.clear();
     setTasks([]);
     setRecoveryIds([]);
-    void qc.cancelQueries({ queryKey: ["tasks"] });
-    void qc.cancelQueries({ queryKey: ["task"] });
-    void qc.cancelQueries({ queryKey: ["song"] });
-    void qc.cancelQueries({ queryKey: ["songs"] });
+    if (cancelReads) {
+      void qc.cancelQueries({ queryKey: ["tasks"] });
+      void qc.cancelQueries({ queryKey: ["task"] });
+      void qc.cancelQueries({ queryKey: ["song"] });
+      void qc.cancelQueries({ queryKey: ["songs"] });
+    }
   }, [qc, stopWatchers]);
-  useLayoutEffect(() => authSession.subscribeInvalidation(stopAll), [stopAll]);
+  const stopAll = useCallback(() => invalidateOwner(true), [invalidateOwner]);
+  useLayoutEffect(() => {
+    generation.current += 1;
+    tokenIdentity.current = getToken();
+    stopped.current = false;
+    setAdmitted(true);
+    const unsubscribe = authSession.subscribeInvalidation(stopAll);
+    const unsubscribeIdentity = subscribeAuthIdentity(stopAll);
+    return () => {
+      unsubscribe();
+      unsubscribeIdentity();
+      invalidateOwner(false);
+    };
+  }, [invalidateOwner, stopAll]);
   const setRecovery = useCallback((id: string, recovering: boolean) => {
     const current = canonical.current.get(id);
     if (recovering && (stopped.current || tombstones.current.has(id) || !current || terminal(current.status))) return;
@@ -180,19 +207,29 @@ export function TaskMonitorProvider({ children }: { children: ReactNode }) {
       : current.filter((item) => item !== id));
   }, []);
 
-  const discovery = useQuery({
+  useQuery({
     queryKey: ["tasks"],
     queryFn: async ({ signal }) => {
+      const captured = captureGeneration();
+      const ensureCurrent = () => {
+        if (!isGenerationCurrent(captured) || signal.aborted) throw new DOMException("Task discovery is no longer current", "AbortError");
+      };
+      ensureCurrent();
       const found: Task[] = [];
       const seen = new Set<string>();
       const limit = 50;
       for (let offset = 0; ; offset += limit) {
         const page = await api.tasks.list({ limit, offset, signal });
-        if (stopped.current || signal.aborted) return [];
+        ensureCurrent();
         for (const task of page) if (!seen.has(task.id)) { found.push(task); seen.add(task.id); }
         if (page.length < limit) break;
       }
-      for (const task of found) track(task);
+      ensureCurrent();
+      for (const task of found) {
+        ensureCurrent();
+        track(task);
+      }
+      ensureCurrent();
       const merged = new Map(found.filter((task) => !tombstones.current.has(task.id) && !deletedSongs.current.has(task.song_id)).map((task) => {
         return [task.id, reconcile(canonical.current.get(task.id), task)] as const;
       }));
@@ -203,23 +240,26 @@ export function TaskMonitorProvider({ children }: { children: ReactNode }) {
     },
     refetchOnMount: "always",
     refetchOnWindowFocus: "always",
+    enabled: admitted,
   });
 
-  useEffect(() => {
-    if (!discovery.data || stopped.current) return;
-    for (const task of discovery.data) {
-      track(task);
+  const visibleSong = useCallback((song: Song, captured?: number): Song | null => {
+    if (deletedSongs.current.has(song.id)) return null;
+    // Keep the older helper shape safe for callers without a captured lease;
+    // app query functions pass the lease and reject the whole stale response.
+    if (stopped.current || (captured !== undefined && !isGenerationCurrent(captured))) {
+      return captured === undefined ? { ...song, tasks: [] } : null;
     }
-  }, [discovery.data, track]);
-
-  const visibleSong = useCallback((song: Song): Song | null => {
-    if (stopped.current || deletedSongs.current.has(song.id)) return null;
-    return { ...song, tasks: song.tasks?.filter((task) => !tombstones.current.has(task.id)) };
-  }, []);
-  const visibleSongs = useCallback((songs: Song[]): Song[] => stopped.current ? [] : songs.filter((song) => !deletedSongs.current.has(song.id)), []);
+    const visibleTasks = song.tasks?.filter((task) => !tombstones.current.has(task.id))
+      .map((task) => reconcile(canonical.current.get(task.id), task));
+    return { ...song, ...(visibleTasks ? { tasks: visibleTasks } : {}) };
+  }, [isGenerationCurrent]);
+  const visibleSongs = useCallback((songs: Song[], captured?: number): Song[] =>
+    stopped.current || (captured !== undefined && !isGenerationCurrent(captured))
+      ? [] : songs.filter((song) => !deletedSongs.current.has(song.id)), [isGenerationCurrent]);
 
   const value = useMemo(() => ({ activeTasks: tasks, recoveryIds, track, publish: update,
-    forgetTask, forgetSong, stopAll, setRecovery, visibleSong, visibleSongs, registerWatcher }), [tasks, recoveryIds, track, update, forgetTask, forgetSong, stopAll, setRecovery, visibleSong, visibleSongs, registerWatcher]);
+    forgetTask, forgetSong, stopAll, captureGeneration, isGenerationCurrent, setRecovery, visibleSong, visibleSongs, registerWatcher }), [tasks, recoveryIds, track, update, forgetTask, forgetSong, stopAll, captureGeneration, isGenerationCurrent, setRecovery, visibleSong, visibleSongs, registerWatcher]);
   return <TaskMonitorContext.Provider value={value}>
     {children}
     {tasks.map((task) => <TaskWatcher key={task.id} task={task} />)}

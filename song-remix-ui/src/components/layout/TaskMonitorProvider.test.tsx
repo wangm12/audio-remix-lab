@@ -6,7 +6,7 @@ import { http, HttpResponse } from "msw";
 import { toast } from "sonner";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { api, authRedirect } from "@/lib/api";
-import { getToken, setToken } from "@/lib/auth";
+import { clearToken, getToken, setToken } from "@/lib/auth";
 import type { Song, Task } from "@/lib/types";
 import { server } from "@/test/server";
 import { TaskMonitorProvider } from "./TaskMonitorProvider";
@@ -42,6 +42,7 @@ function Consumer() {
     <div data-testid="active">{monitor.activeTasks.map((item) => `${item.id}:${item.status}`).join(",")}</div>
     <div data-testid="status">{taskA?.status ?? "missing"}</div>
     <button onClick={() => monitor.track(task("accepted", "song-new", "pending"))}>Accept task</button>
+    <button onClick={monitor.stopAll}>Stop monitor</button>
     <div data-testid="listed">{client.getQueryData<Task[]>(["tasks"])?.some((item) => item.id === "accepted") ? "listed" : "not listed"}</div>
     {monitor.recoveryIds.includes("active-a") && <p role="status">Live updates interrupted. Checking task status…</p>}
   </>;
@@ -51,7 +52,13 @@ function LateSongQuery({ songId }: { songId: string }) {
   const monitor = useTaskMonitor();
   const { data } = useQuery<Song | null>({
     queryKey: ["song", songId],
-    queryFn: async () => monitor.visibleSong(await api.songs.get(songId)),
+    queryFn: async ({ signal }) => {
+      const generation = monitor.captureGeneration();
+      if (!monitor.isGenerationCurrent(generation)) throw new DOMException("Song request is no longer current", "AbortError");
+      const song = await api.songs.get(songId, signal);
+      if (!monitor.isGenerationCurrent(generation) || signal.aborted) throw new DOMException("Song request is no longer current", "AbortError");
+      return monitor.visibleSong(song, generation);
+    },
   });
   return <p data-testid="song-result">{data?.tasks?.map((item) => item.id).join(",") || "empty"}</p>;
 }
@@ -63,6 +70,7 @@ function renderMonitor() {
 }
 
 afterEach(() => {
+  clearToken();
   vi.restoreAllMocks();
   vi.useRealTimers();
   vi.unstubAllGlobals();
@@ -288,6 +296,72 @@ describe("app-shell task monitor", () => {
     expect(await screen.findByTestId("song-result")).toHaveTextContent("empty");
     expect(client.getQueryData(["task", stale.id])).toBeUndefined();
     expect(currentMonitor.activeTasks).toEqual([]);
+    view.unmount();
+  });
+
+  it("reconciles a deferred Song snapshot with the canonical terminal task", async () => {
+    let finishSong: ((response: Response) => void) | undefined;
+    const stale = task("active-a", "song-a", "processing");
+    const song = { id: "song-a", title: "late", artist: null, lyrics: null, has_source: false,
+      created_at: "2026-01-01T00:00:00Z", tasks: [stale] } as Song;
+    server.use(
+      http.get("/api/tasks", () => HttpResponse.json([stale])),
+      http.get("/api/songs/song-a", () => new Promise((resolve) => { finishSong = resolve; })),
+    );
+    const view = renderMonitor();
+    await waitFor(() => expect(screen.getByTestId("active")).toHaveTextContent("active-a:processing"));
+    const captured = currentMonitor.captureGeneration();
+    const read = api.songs.get("song-a").then((value) => {
+      if (!currentMonitor.isGenerationCurrent(captured)) return;
+      const visible = currentMonitor.visibleSong(value, captured);
+      if (visible) view.client.setQueryData(["song", "song-a"], visible);
+    });
+    await waitFor(() => expect(finishSong).toBeDefined());
+    act(() => currentMonitor.publish("active-a", { status: "completed", completed_at: "2026-01-01T00:01:00Z", has_output: true }));
+    await act(async () => { finishSong?.(HttpResponse.json(song)); await read; });
+    expect(view.client.getQueryData<Song>(["song", "song-a"])?.tasks?.[0].status).toBe("completed");
+    view.unmount();
+  });
+
+  it.each(["unmount", "logout", "auth identity replacement"] as const)(
+    "rejects a delayed Song result after %s", async (end) => {
+      let finishSong: ((response: Response) => void) | undefined;
+      const stale = task("late-task", "song-a", "processing");
+      const song = { id: "song-a", title: "late", artist: null, lyrics: null, has_source: false,
+        created_at: "2026-01-01T00:00:00Z", tasks: [stale] } as Song;
+      server.use(
+        http.get("/api/tasks", () => HttpResponse.json([])),
+        http.get("/api/songs/song-a", () => new Promise((resolve) => { finishSong = resolve; })),
+      );
+      if (end === "auth identity replacement") setToken("identity-a");
+      const view = renderMonitor();
+      await waitFor(() => expect(screen.getByTestId("active")).toBeInTheDocument());
+      const owner = currentMonitor;
+      const captured = owner.captureGeneration();
+      const read = api.songs.get("song-a").then((value) => {
+        if (!owner.isGenerationCurrent(captured)) return;
+        const visible = owner.visibleSong(value, captured);
+        if (visible) view.client.setQueryData(["song", "song-a"], visible);
+      });
+      await waitFor(() => expect(finishSong).toBeDefined());
+      if (end === "unmount") view.unmount();
+      else if (end === "logout") act(() => owner.stopAll());
+      else setToken("identity-b");
+      await act(async () => { finishSong?.(HttpResponse.json(song)); await read; });
+      expect(view.client.getQueryData(["song", "song-a"])).toBeUndefined();
+      if (end !== "unmount") view.unmount();
+    },
+  );
+
+  it("keeps discovery closed across invalidation and focus after stop", async () => {
+    let listCalls = 0;
+    server.use(http.get("/api/tasks", () => { listCalls += 1; return HttpResponse.json([]); }));
+    const view = renderMonitor();
+    await waitFor(() => expect(listCalls).toBe(1));
+    act(() => currentMonitor.stopAll());
+    await act(async () => { await view.client.invalidateQueries({ queryKey: ["tasks"], exact: true }); });
+    await act(async () => { window.dispatchEvent(new Event("focus")); await Promise.resolve(); });
+    expect(listCalls).toBe(1);
     view.unmount();
   });
 

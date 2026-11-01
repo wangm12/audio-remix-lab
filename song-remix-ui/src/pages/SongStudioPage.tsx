@@ -17,7 +17,13 @@ export function SongStudioPage() {
   const monitor = useTaskMonitor();
   const { data: song, isLoading } = useQuery({
     queryKey: ["song", songId],
-    queryFn: async () => monitor.visibleSong(await api.songs.get(songId)),
+    queryFn: async ({ signal }) => {
+      const generation = monitor.captureGeneration();
+      if (!monitor.isGenerationCurrent(generation)) throw new DOMException("Song request is no longer current", "AbortError");
+      const song = await api.songs.get(songId, signal);
+      if (!monitor.isGenerationCurrent(generation) || signal.aborted) throw new DOMException("Song request is no longer current", "AbortError");
+      return monitor.visibleSong(song, generation);
+    },
   });
 
   if (isLoading) {

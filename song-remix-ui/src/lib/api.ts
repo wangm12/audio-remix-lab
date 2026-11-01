@@ -41,14 +41,19 @@ function statusMessage(status: number) {
 
 function safeIssues(detail: unknown): ApiFieldIssue[] {
   if (!Array.isArray(detail)) return [];
+  const transportPrefixes = new Set(["body", "query", "path"]);
   const issues: ApiFieldIssue[] = [];
   for (const item of detail.slice(0, 6)) {
     if (!item || typeof item !== "object" || Array.isArray(item)) continue;
     const entry = item as { loc?: unknown; msg?: unknown };
     if (!Array.isArray(entry.loc) || !entry.loc.every((part) => typeof part === "string") || typeof entry.msg !== "string") continue;
-    const location = entry.loc.filter((part) => part !== "body" && part !== "query" && part !== "path");
-    const field = [...location].reverse().find((part): part is string => allowedFields.has(part));
-    if (!field) continue;
+    const location = entry.loc;
+    const field = location.length === 1
+      ? location[0]
+      : location.length === 2 && transportPrefixes.has(location[0])
+        ? location[1]
+        : undefined;
+    if (!field || !allowedFields.has(field)) continue;
     const message = entry.msg.replace(/[\r\n]+/g, " ").slice(0, 180);
     if (message) issues.push({ field, message });
   }
@@ -136,8 +141,8 @@ export const api = {
   },
 
   songs: {
-    list: () => request<Song[]>("/songs"),
-    get: (id: string) => request<Song>(`/songs/${id}`),
+    list: (signal?: AbortSignal) => request<Song[]>("/songs", { signal }),
+    get: (id: string, signal?: AbortSignal) => request<Song>(`/songs/${id}`, { signal }),
     create: (data: { title: string; artist?: string; lyrics?: string }) =>
       request<Song>("/songs", {
         method: "POST",

@@ -9,9 +9,11 @@ export interface TaskMonitorValue {
   forgetTask: (id: string) => void;
   forgetSong: (songId: string) => void;
   stopAll: () => void;
+  captureGeneration: () => number;
+  isGenerationCurrent: (generation: number) => boolean;
   setRecovery: (id: string, recovering: boolean) => void;
-  visibleSong: (song: Song) => Song | null;
-  visibleSongs: (songs: Song[]) => Song[];
+  visibleSong: (song: Song, generation?: number) => Song | null;
+  visibleSongs: (songs: Song[], generation?: number) => Song[];
   registerWatcher: (id: string, stop: () => void) => () => void;
 }
 

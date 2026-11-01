@@ -7,13 +7,16 @@ const allowedStatuses = new Set(["pending", "processing", "completed", "failed"]
 
 export function useTaskStream(taskId: string) {
   const { publish, forgetTask, setRecovery, stopAll, registerWatcher } = useTaskMonitor();
+  const { captureGeneration, isGenerationCurrent } = useTaskMonitor();
   useEffect(() => {
+    const generation = captureGeneration();
     let alive = true;
     let source: EventSource | null = null;
     let timer: ReturnType<typeof setTimeout> | undefined;
     let controller: AbortController | null = null;
     let delay = 2500;
     let fallback = false;
+    const isCurrent = () => alive && isGenerationCurrent(generation);
     const teardown = () => {
       if (!alive) return;
       alive = false;
@@ -21,12 +24,12 @@ export function useTaskStream(taskId: string) {
       source = null;
       if (timer) clearTimeout(timer);
       controller?.abort();
-      setRecovery(taskId, false);
+      if (isGenerationCurrent(generation)) setRecovery(taskId, false);
     };
     const unregister = registerWatcher(taskId, teardown);
     if (!alive) return () => unregister();
     const onPartial = (raw: unknown) => {
-      if (!alive || !raw || typeof raw !== "object" || Array.isArray(raw)) return false;
+      if (!isCurrent() || !raw || typeof raw !== "object" || Array.isArray(raw)) return false;
       const candidate = raw as Record<string, unknown>;
       if (typeof candidate.status !== "string" || !allowedStatuses.has(candidate.status)) return false;
       const partial: Partial<Task> = { status: candidate.status as Task["status"] };
@@ -38,21 +41,21 @@ export function useTaskStream(taskId: string) {
       return true;
     };
     const schedule = () => {
-      if (!alive || timer) return;
+      if (!isCurrent() || timer) return;
       timer = setTimeout(() => { timer = undefined; void poll(); }, delay);
     };
     const poll = async () => {
-      if (!alive || controller) return;
+      if (!isCurrent() || controller) return;
       const current = new AbortController();
       controller = current;
       try {
         const task = await api.tasks.get(taskId, current.signal);
-        if (!alive || current.signal.aborted) return;
+        if (!isCurrent() || current.signal.aborted) return;
         delay = 2500;
         publish(taskId, task);
         if (task.status === "completed" || task.status === "failed") teardown();
       } catch (error) {
-        if (!alive || current.signal.aborted) return;
+        if (!isCurrent() || current.signal.aborted) return;
         if (error instanceof ApiError && error.status === 404) {
           forgetTask(taskId);
           return;
@@ -65,13 +68,13 @@ export function useTaskStream(taskId: string) {
         delay = Math.min(Math.max(delay * 2, 3000), 15000);
       } finally {
         if (controller === current) controller = null;
-        if (alive && fallback) schedule();
+        if (isCurrent() && fallback) schedule();
       }
     };
     try {
       source = new EventSource(api.tasks.streamUrl(taskId));
       source.addEventListener("progress", (event) => {
-        if (!alive) return;
+        if (!isCurrent()) return;
         try {
           const data: unknown = JSON.parse((event as MessageEvent<string>).data);
           if (!onPartial(data)) throw new Error("Malformed task update");
@@ -80,7 +83,7 @@ export function useTaskStream(taskId: string) {
             teardown();
           }
         } catch {
-          if (!alive) return;
+          if (!isCurrent()) return;
           fallback = true;
           source?.close(); source = null;
           setRecovery(taskId, true);
@@ -88,18 +91,18 @@ export function useTaskStream(taskId: string) {
         }
       });
       source.addEventListener("error", () => {
-        if (!alive) return;
+        if (!isCurrent()) return;
         fallback = true;
         source?.close(); source = null;
         setRecovery(taskId, true);
         void poll();
       });
     } catch {
-      if (!alive) return;
+      if (!isCurrent()) return;
       fallback = true;
       setRecovery(taskId, true);
       void poll();
     }
     return () => { unregister(); teardown(); };
-  }, [taskId, publish, forgetTask, setRecovery, stopAll, registerWatcher]);
+  }, [taskId, publish, forgetTask, setRecovery, stopAll, registerWatcher, captureGeneration, isGenerationCurrent]);
 }

@@ -12,7 +12,13 @@ export function LibraryPage() {
   const monitor = useTaskMonitor();
   const { data: songs, isLoading } = useQuery({
     queryKey: ["songs"],
-    queryFn: async () => monitor.visibleSongs(await api.songs.list()),
+    queryFn: async ({ signal }) => {
+      const generation = monitor.captureGeneration();
+      if (!monitor.isGenerationCurrent(generation)) throw new DOMException("Song list request is no longer current", "AbortError");
+      const songs = await api.songs.list(signal);
+      if (!monitor.isGenerationCurrent(generation) || signal.aborted) throw new DOMException("Song list request is no longer current", "AbortError");
+      return monitor.visibleSongs(songs, generation);
+    },
   });
 
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
