@@ -1,21 +1,29 @@
 from uuid import UUID
 from datetime import datetime
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class SongCreate(BaseModel):
-    title: str
-    artist: str | None = None
+    title: str = Field(max_length=255)
+    artist: str | None = Field(default=None, max_length=255)
     lyrics: str | None = None
 
 
 class SongUpdate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    title: str | None = None
-    artist: str | None = None
+    title: str | None = Field(default=None, max_length=255)
+    artist: str | None = Field(default=None, max_length=255)
     lyrics: str | None = None
+
+    @field_validator("title", mode="before")
+    @classmethod
+    def title_cannot_be_null(cls, value):
+        """Reject explicit null while allowing PATCH clients to omit title."""
+        if value is None:
+            raise ValueError("title cannot be null")
+        return value
 
 
 class SongResponse(BaseModel):

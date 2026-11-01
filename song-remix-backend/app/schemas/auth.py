@@ -9,7 +9,7 @@ PASSWORD_MIN_LENGTH = 8
 
 
 class RegisterRequest(BaseModel):
-    email: EmailStr
+    email: EmailStr = Field(max_length=255)
     username: str = Field(min_length=1, max_length=100)
     password: str = Field(min_length=PASSWORD_MIN_LENGTH)
     invite_code: str | None = None

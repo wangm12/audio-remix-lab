@@ -51,7 +51,7 @@ async def generate(
             select(StylePreset).where(
                 StylePreset.id == req.style_preset_id,
                 or_(StylePreset.is_builtin.is_(True), StylePreset.user_id == user.id),
-            )
+            ).with_for_update().execution_options(populate_existing=True)
         )
         preset = preset_result.scalar_one_or_none()
         if preset is None:

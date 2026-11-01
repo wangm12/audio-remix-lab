@@ -1,17 +1,17 @@
 from uuid import UUID
 from datetime import datetime
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from pydantic import field_serializer
 
 INPUT_SNAPSHOT_KEY = "_input_snapshot"
 
 
 class GenerateRequest(BaseModel):
-    engine: str = "acestep"
+    engine: str = Field(default="acestep", max_length=50)
     style_preset_id: UUID | None = None
     style_prompt: str | None = None
-    vocal_gender: str = "auto"
+    vocal_gender: str = Field(default="auto", max_length=10)
     lyrics: str | None = None
     engine_params: dict | None = None
 

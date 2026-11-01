@@ -1,13 +1,14 @@
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import select, or_
+from sqlalchemy import select, or_, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
 from app.core.deps import get_current_user
 from app.models.user import User
 from app.models.preset import StylePreset
+from app.models.task import GenerationTask
 from app.schemas.preset import PresetCreate, PresetUpdate, PresetResponse
 
 router = APIRouter(prefix="/api/presets", tags=["presets"])
@@ -55,7 +56,10 @@ async def update_preset(
     user: User = Depends(get_current_user),
 ):
     result = await db.execute(
-        select(StylePreset).where(StylePreset.id == preset_id, StylePreset.user_id == user.id)
+        select(StylePreset)
+        .where(StylePreset.id == preset_id, StylePreset.user_id == user.id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
     )
     preset = result.scalar_one_or_none()
     if preset is None:
@@ -74,10 +78,23 @@ async def delete_preset(
     user: User = Depends(get_current_user),
 ):
     result = await db.execute(
-        select(StylePreset).where(StylePreset.id == preset_id, StylePreset.user_id == user.id, StylePreset.is_builtin == False)  # noqa: E712
+        select(StylePreset)
+        .where(
+            StylePreset.id == preset_id,
+            StylePreset.user_id == user.id,
+            StylePreset.is_builtin.is_(False),
+        )
+        .with_for_update()
+        .execution_options(populate_existing=True)
     )
     preset = result.scalar_one_or_none()
     if preset is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Preset not found or is builtin")
+    await db.execute(
+        update(GenerationTask)
+        .where(GenerationTask.style_preset_id == preset.id)
+        .values(style_preset_id=None)
+        .execution_options(synchronize_session=False)
+    )
     await db.delete(preset)
     await db.commit()
