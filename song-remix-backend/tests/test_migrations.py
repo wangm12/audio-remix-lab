@@ -3,14 +3,60 @@ import uuid
 import pytest
 
 from tests._env import TEST_DATABASE_URL
-from tests.helpers import database_url, execute_sql, fetch_sql, recreate_database, run_alembic
+from tests.helpers import execute_sql, fetch_sql, migration_database_url, recreate_database, run_alembic
 
 
 @pytest.fixture
 def scratch_db() -> str:
-    url = database_url(TEST_DATABASE_URL, "remix_studio_migrations_test")
+    url = migration_database_url(TEST_DATABASE_URL)
     recreate_database(url)
     return url
+
+
+@pytest.mark.parametrize(
+    ("url", "expected"),
+    [
+        (
+            "postgresql+asyncpg://remix:secret@db.example:5433/remix_studio_test?ssl=require",
+            "postgresql+asyncpg://remix:secret@db.example:5433/remix_studio_migrations_test?ssl=require",
+        ),
+        (
+            "postgresql://remix:secret@localhost:5432/remix_studio_run42_test?application_name=checks",
+            "postgresql://remix:secret@localhost:5432/remix_studio_run42_migrations_test?application_name=checks",
+        ),
+    ],
+)
+def test_migration_database_url_is_derived_from_test_url(url, expected):
+    assert migration_database_url(url) == expected
+
+
+def test_migration_database_url_requires_test_suffix():
+    with pytest.raises(ValueError, match="must end with '_test'"):
+        migration_database_url("postgresql://localhost/remix_studio")
+
+
+def test_migration_database_url_preserves_default_database_name():
+    assert migration_database_url(
+        "postgresql+asyncpg://remix:remix@localhost:5432/remix_studio_test"
+    ) == "postgresql+asyncpg://remix:remix@localhost:5432/remix_studio_migrations_test"
+
+
+def test_migration_subprocess_aligns_both_database_environment_variables(monkeypatch):
+    import subprocess
+
+    import tests.helpers as helpers
+
+    captured = {}
+
+    def fake_run(args, *, cwd, env, capture_output, text):
+        captured.update(env=env, args=args)
+        return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(helpers.subprocess, "run", fake_run)
+    target = "postgresql+asyncpg://remix:secret@localhost:5432/remix_studio_run42_test?ssl=require"
+    helpers.run_alembic(target, "upgrade", "head")
+    assert captured["env"]["DATABASE_URL"] == target
+    assert captured["env"]["TEST_DATABASE_URL"] == target
 
 
 def _columns(url: str, table: str) -> set[str]:

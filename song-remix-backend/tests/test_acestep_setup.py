@@ -103,6 +103,8 @@ def test_checkpoint_guard_rejects_symlink_loop_without_changing_it(tmp_path):
     alias.symlink_to(alias)
     result = _guard(checkout, tmp_path / "wanted")
     assert result.returncode != 0
+    assert "Traceback" not in result.stderr
+    assert "ACE-Step checkpoint setup failed:" in result.stderr
     assert "checkpoints" in result.stderr
     assert alias.is_symlink() and alias.readlink() == alias
 

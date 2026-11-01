@@ -36,7 +36,7 @@ def main() -> int:
         return 2
     try:
         print(prepare(Path(sys.argv[1]), Path(sys.argv[2])))
-    except (OSError, ValueError) as exc:
+    except (OSError, RuntimeError, ValueError) as exc:
         print(f"ACE-Step checkpoint setup failed: {exc}", file=sys.stderr)
         return 1
     return 0

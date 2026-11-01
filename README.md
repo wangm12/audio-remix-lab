@@ -2,220 +2,183 @@
 
 [English](README.md) | [简体中文](README.zh-CN.md)
 
-Song Remix Studio is a full-stack web app for turning source tracks into remixes. It lets users upload audio, manage songs and lyrics, pick a style preset or custom prompt, generate remixes through local or cloud engines, and listen back to generated results from a library.
+Song Remix Studio is a self-hosted web app for managing songs and preparing remix generations through the configured [ACE-Step 1.5](https://github.com/ace-step/ACE-Step-1.5) service. The P0 integration targets the pinned v0.1.8 release and MLX setup on Apple Silicon; model installation, inference behavior and production readiness are evaluated in the later engine spike.
 
 ## Features
 
-- Email/password authentication with JWT sessions.
-- Song creation, source audio upload, lyrics editing, and library browsing.
-- Audio upload support for common formats including MP3, WAV, FLAC, OGG, M4A, and MP4.
-- Lyrics structuring with interlude detection powered by Demucs-MLX.
-- Remix generation tasks with progress streaming over server-sent events.
-- Style presets and custom prompts for generation.
-- Optional generation engines:
-  - `acestep` for local ACE-Step generation.
-  - `suno` for Suno-backed generation through the local `suno-api` service.
+- Accounts with email and password. Each user sees only their own songs, generations and presets.
+- Songs with a source audio upload (MP3, WAV, FLAC, OGG or M4A, checked with ffprobe, up to 128 MB and 10 minutes), lyrics editing and a library.
+- Lyrics structuring with interlude detection (Demucs-MLX).
+- Remix-generation requests through the configured ACE-Step API, with live progress over server-sent events.
+- Built-in R&B style presets, your own presets and free-form style prompts.
 
-## Tech Stack
+## Tech stack
 
-- Frontend: React 19, Vite, TypeScript, TanStack Router, TanStack Query, Tailwind CSS.
-- Backend: FastAPI, SQLAlchemy async, Alembic, PostgreSQL, Pydantic Settings.
-- Audio: FFmpeg, Demucs-MLX.
-- Infrastructure: Docker Compose for PostgreSQL and optional engine services.
+- Frontend: React 19, Vite, TypeScript, TanStack Router, TanStack Query and Tailwind CSS. Tests use Vitest, Testing Library and MSW.
+- Backend: FastAPI, async SQLAlchemy, Alembic, PostgreSQL 16 and Pydantic Settings. Tests use pytest and respx; lint uses Ruff.
+- Audio and models: FFmpeg, Demucs-MLX, and ACE-Step 1.5 v0.1.8 on the MLX backend.
 
-## Repository Layout
+## Repository layout
 
 ```text
 .
 ├── song-remix-ui/        # React/Vite frontend
-├── song-remix-backend/   # FastAPI backend and Alembic migrations
-├── acestep/              # Local ACE-Step engine source/service
-├── suno-api/             # Optional Suno API service mount
-├── data/                 # Local uploads and generated audio
-├── docker-compose.yml
+├── song-remix-backend/   # FastAPI backend, Alembic migrations and tests
+│   └── data/             # uploaded and generated audio (STORAGE_PATH, git-ignored)
+├── acestep/              # ACE-Step 1.5 git submodule, pinned to v0.1.8
+├── docker-compose.yml    # PostgreSQL only
+├── Makefile
 └── .env.example
 ```
 
 ## Prerequisites
 
-- Node.js 20+
-- Python 3.12+
-- PostgreSQL 16, or Docker for the bundled Postgres service
-- FFmpeg
+- A Mac with Apple Silicon. ACE-Step runs on MLX.
+- Python 3.12
+- Node.js 24 with npm 11. With nvm, run `nvm install 24` once and `nvm use` in the repository (it reads `.nvmrc`).
+- Docker, for PostgreSQL
+- FFmpeg: `brew install ffmpeg`
+- uv, which runs ACE-Step: `brew install uv`
 
-The backend Docker image installs FFmpeg automatically. For local backend development, install FFmpeg on your machine first.
-
-## Quick Start
-
-Clone with submodules, or initialize them after cloning:
+## Quick start
 
 ```bash
 git clone --recurse-submodules https://github.com/wangm12/audio-remix-lab.git
+cd audio-remix-lab
+nvm use
+make env      # creates .env and generates a random JWT_SECRET
+make seed     # PostgreSQL, migrations and the built-in style presets
+make dev      # backend on 127.0.0.1:8000 and frontend on 127.0.0.1:5173
 ```
+
+Open http://127.0.0.1:5173 and create an account. The Vite dev server proxies `/api` to the backend.
+
+Start the engine in a second terminal:
 
 ```bash
-git submodule update --init --recursive
+make acestep
+curl -s http://127.0.0.1:8001/health
 ```
 
-Create `.env`, install dependencies, start PostgreSQL, run migrations, and launch the backend and frontend:
+ACE-Step model files use the shared cache at `~/.cache/audio-remix-lab/acestep-checkpoints`. The pinned checkout has a guarded `acestep/checkpoints` compatibility symlink because this upstream version expects that path. To download registered models ahead of time, run `make acestep-download` (it invokes `uv run acestep-download --all`). `make acestep` does not source `.env` into the ACE-Step process; it passes only the selected model settings, cache path and required launch flags, so app secrets such as `JWT_SECRET`, `DATABASE_URL` and `REGISTRATION_INVITE_CODE` are not exposed to it.
+
+To use other models, set `ACESTEP_MODEL` and `ACESTEP_LM_MODEL` in `.env`, or pass them on the command line, for example `make acestep ACESTEP_MODEL=acestep-v15-xl-turbo`. ACE-Step always listens on 127.0.0.1, whatever `HOST` is set to.
+
+## Sharing with other people
+
+By default, `make dev` and `make serve` listen on 127.0.0.1, so only your Mac can reach them.
+
+`make serve` builds the UI, then serves the UI and the API together from FastAPI on port 8000, without auto-reload:
 
 ```bash
-make dev
+make serve                  # http://127.0.0.1:8000
+make serve HOST=0.0.0.0     # reachable from your LAN at http://<your-mac-ip>:8000
 ```
 
-Open the app at http://localhost:5173. The Vite dev server proxies `/api` requests to the backend at http://localhost:8000.
+You can also put `HOST=0.0.0.0` in `.env`.
 
-You can also start services individually:
+- **LAN.** Use `HOST=0.0.0.0`. The traffic is plain HTTP, so do this only on a network you trust.
+- **Internet.** Keep `HOST=127.0.0.1` and publish port 8000 through an HTTPS tunnel, such as `cloudflared tunnel --url http://127.0.0.1:8000` or `tailscale serve 8000`. Set `COOKIE_SECURE=true` in `.env` whenever the app is reached over HTTPS.
+- **Invite only.** Set `REGISTRATION_INVITE_CODE` so that new accounts need the code to sign up.
+
+## Configuration
+
+`make env` copies `.env.example` to `.env` if `.env` does not exist. It also replaces an empty or short `JWT_SECRET` with a random one, and running it again changes nothing. The backend refuses to start when `JWT_SECRET` is empty, a known default, or shorter than 32 characters.
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `DATABASE_URL` | `postgresql+asyncpg://remix:remix@localhost:5432/remix_studio` | Async SQLAlchemy database URL. |
+| `DB_PASSWORD` | `remix` | Password of the Compose PostgreSQL user. |
+| `JWT_SECRET` | generated by `make env` | Signs access and media tokens. At least 32 characters. |
+| `JWT_ALGORITHM` | `HS256` | JWT signing algorithm. |
+| `JWT_EXPIRE_MINUTES` | `1440` | Lifetime of tokens and of the media cookie. |
+| `COOKIE_SECURE` | `false` | Set to `true` when the app is served over HTTPS. |
+| `REGISTRATION_INVITE_CODE` | empty | When set, sign-up requires this code. |
+| `LOGIN_RATE_LIMIT_ATTEMPTS` | `10` | Failed logins allowed per client IP within the window. |
+| `LOGIN_RATE_LIMIT_WINDOW_SECONDS` | `300` | Length of that window in seconds. |
+| `STORAGE_PATH` | `./data` | Storage root. Make runs backend commands from `song-remix-backend/`; sources use `users/{user}/songs/{song}/` and current P0 generated files use `outputs/`. |
+| `CORS_ORIGINS` | `http://localhost:5173,http://127.0.0.1:5173` | Comma-separated origins allowed to call the API cross-origin. |
+| `HOST` | `127.0.0.1` | Bind address for `make dev`, `make backend`, `make frontend` and `make serve`. |
+| `ACESTEP_ENABLED` | `true` | Registers the ACE-Step engine. |
+| `ACESTEP_API_BASE` | `http://127.0.0.1:8001` | Where the backend reaches ACE-Step. |
+| `ACESTEP_MODEL` | `acestep-v15-turbo` | Model that `make acestep` starts. |
+| `ACESTEP_LM_MODEL` | `acestep-5Hz-lm-1.7B` | Language model that `make acestep` starts. |
+
+`ENV_FILE` selects the env file read by Make recipes; it does not change Docker Compose, which reads the repository `.env` independently. `make env ENV_FILE=path` creates or updates that selected file. The backend receives the settings when Make starts it. Make recipes run backend commands from `song-remix-backend/`, so the default relative `STORAGE_PATH=./data` resolves there; `storage_root()` resolves the configured path to an absolute path when accessing storage.
+
+Source audio is stored under `STORAGE_PATH/users/{user}/songs/{song}/`. P0 generation output files still use `STORAGE_PATH/outputs/`; API ownership checks control which user can access each generated item. This does not move outputs into per-user storage.
+
+The backend also reads three optional settings that are not in `.env.example`:
+- `MAX_UPLOAD_MB` (default `128`)
+- `MAX_SOURCE_DURATION_SECONDS` (default `600`)
+- `FRONTEND_DIST`, which `make serve` sets for you.
+
+## Commands
 
 ```bash
-make postgres
-make backend
-make frontend
+make help              # list every target
+make env               # create .env with a random JWT_SECRET
+make dev               # PostgreSQL, migrations, backend with reload, and frontend
+make serve             # build the UI and serve UI + API on port 8000
+make acestep           # start ACE-Step on 127.0.0.1:8001
+make acestep-download  # download the ACE-Step models without starting the server
+make backend           # backend only
+make frontend          # frontend only
+make postgres          # PostgreSQL only
+make migrate           # alembic upgrade head
+make seed              # add the built-in style presets
+make test              # backend lint and tests, then frontend tests, lint and build
+make down              # stop Docker Compose services
 ```
 
-Manual setup is still available if you prefer to run each command yourself:
+## Tests
+
+`make test` runs every check. It needs PostgreSQL (`make postgres`) but never a running ACE-Step: the test settings point `ACESTEP_API_BASE` at an unreachable host, and any test that needs an engine response mocks it with respx.
+
+- Backend: `cd song-remix-backend && .venv/bin/ruff check . && .venv/bin/pytest -q`. The tests create the `remix_studio_test` database and migrate it with Alembic. Set `TEST_DATABASE_URL` to use a different server.
+- Frontend: `cd song-remix-ui && npm test && npm run lint && npm run build`.
+
+## Database migrations
 
 ```bash
-cp .env.example .env
-docker compose up -d postgres
-cd song-remix-backend
-python -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-alembic upgrade head
-uvicorn app.main:app --reload
+make migrate
+cd song-remix-backend && .venv/bin/alembic revision --autogenerate -m "describe change"
 ```
 
-In another terminal, set up the frontend:
+## Python dependencies
 
-```bash
-cd song-remix-ui
-npm install
-npm run dev
-```
-
-## Environment Variables
-
-The app reads configuration from `.env`.
-
-| Variable | Purpose |
-| --- | --- |
-| `DATABASE_URL` | Async SQLAlchemy database URL. Use `localhost` for local backend development and `postgres` as the host when running the backend inside Docker Compose. |
-| `DB_PASSWORD` | Password for the Compose-managed Postgres user. |
-| `JWT_SECRET` | Secret used to sign access tokens. Change this outside local development. |
-| `JWT_ALGORITHM` | JWT signing algorithm. Defaults to `HS256`. |
-| `JWT_EXPIRE_MINUTES` | Access token lifetime in minutes. |
-| `STORAGE_PATH` | Local directory for uploads and generated files. |
-| `CORS_ORIGINS` | Comma-separated allowed frontend origins. |
-| `ACESTEP_ENABLED` | Enables the `acestep` generation engine. |
-| `ACESTEP_API_BASE` | Base URL for the ACE-Step API service. |
-| `ACESTEP_MODEL` | ACE-Step model name to request. |
-| `SUNO_ENABLED` | Enables the `suno` generation engine. |
-| `SUNO_API_BASE` | Base URL for the Suno API service. |
-| `SUNO_COOKIE` | Suno session cookie for the optional Suno service. |
-| `TWOCAPTCHA_KEY` | Optional captcha-solving key for the Suno service. |
-
-## Optional Services
-
-Start the local ACE-Step service when you want to use the `acestep` engine:
-
-```bash
-docker compose --profile acestep up -d acestep
-```
-
-Start the Suno API service when you want to use the `suno` engine:
-
-```bash
-docker compose --profile suno up -d suno-api
-```
-
-Then update `.env` to enable the engine you want:
-
-```bash
-ACESTEP_ENABLED=true
-SUNO_ENABLED=false
-```
-
-or:
-
-```bash
-ACESTEP_ENABLED=false
-SUNO_ENABLED=true
-```
-
-## Database Migrations
-
-Run migrations from `song-remix-backend`:
-
-```bash
-alembic upgrade head
-```
-
-Create a new migration after changing SQLAlchemy models:
-
-```bash
-alembic revision --autogenerate -m "describe change"
-```
-
-## Development Commands
-
-Make targets:
-
-```bash
-make help       # list available commands
-make dev        # one-command local startup
-make frontend   # frontend only
-make backend    # backend only
-make postgres   # database only
-make migrate    # run Alembic migrations
-make seed       # seed style presets
-make down       # stop Docker Compose services
-```
-
-Frontend scripts:
-
-```bash
-cd song-remix-ui
-npm run dev
-npm run build
-npm run lint
-```
-
-Backend:
+`requirements.txt` and `requirements-dev.txt` list the direct dependencies. `requirements.lock` pins every package, and it is what `make install` installs. After you change either requirements file, regenerate the lock:
 
 ```bash
 cd song-remix-backend
-uvicorn app.main:app --reload
-alembic upgrade head
+uv pip compile requirements.txt requirements-dev.txt --python-version 3.12 --output-file requirements.lock
 ```
 
-## Docker Notes
+## API overview
 
-`docker-compose.yml` defines services for the frontend, backend, PostgreSQL, ACE-Step, and Suno API. At the moment, the frontend service expects a `song-remix-ui/Dockerfile`, which is not included in this repo. For the current project state, the most reliable workflow is to run PostgreSQL with Compose and run the frontend/backend locally.
+Every route except register, login, logout and health needs `Authorization: Bearer <token>`.
 
-If you run the backend in Compose, set:
+- `POST /api/auth/register`, `POST /api/auth/login`, `POST /api/auth/logout`, `GET /api/auth/me`
+- `GET /api/songs`, `POST /api/songs`, `GET /api/songs/{id}`, `PATCH /api/songs/{id}`, `DELETE /api/songs/{id}`
+- `POST /api/songs/{id}/source`: upload the source audio as the multipart field `file`.
+- `POST /api/songs/{id}/structure-lyrics`
+- `POST /api/songs/{id}/generate`
+- `GET /api/tasks`, `GET /api/tasks/{id}`, `DELETE /api/tasks/{id}`
+- `GET /api/tasks/{id}/audio` and `GET /api/tasks/{id}/stream`: these also accept the media cookie, so `<audio>` and `EventSource` work.
+- `GET /api/presets`, `POST /api/presets`, `PUT /api/presets/{id}`, `DELETE /api/presets/{id}`
+- `GET /api/engines/status`
+- `GET /api/health`
 
-```bash
-DATABASE_URL=postgresql+asyncpg://remix:remix@postgres:5432/remix_studio
-```
+## Security notes
 
-When running the backend locally against the Compose Postgres service, use:
+- **Tokens and the media cookie.** API calls authenticate with a bearer token. Logging in also sets the `remix_media` cookie (HttpOnly, SameSite=Lax, path `/api`). It is accepted only by the audio and progress-stream routes, and its token is rejected when used as a bearer token.
+- **Ownership.** Songs, generations and presets are checked against their owner; other users get 404.
+- **File paths.** Responses never contain file paths. Files live under `STORAGE_PATH/users/<user>/songs/<song>/`.
+- **Passwords and login limits.**
+  - Passwords must be between 8 characters and 72 bytes long.
+  - Failed logins are limited per client IP (`LOGIN_RATE_LIMIT_ATTEMPTS` per `LOGIN_RATE_LIMIT_WINDOW_SECONDS`).
+  - During `make dev` every browser reaches the backend through the Vite proxy as 127.0.0.1, so they all share one limit.
 
-```bash
-DATABASE_URL=postgresql+asyncpg://remix:remix@localhost:5432/remix_studio
-```
+## Git hygiene
 
-## API Overview
-
-- `POST /api/auth/register` and `POST /api/auth/login` for authentication.
-- `GET /api/songs`, `POST /api/songs`, `PATCH /api/songs/{song_id}`, and `DELETE /api/songs/{song_id}` for song management.
-- `POST /api/upload/audio` for source audio uploads.
-- `POST /api/songs/{song_id}/structure-lyrics` for interlude-aware lyric structuring.
-- `POST /api/songs/{song_id}/generate` for remix generation.
-- `GET /api/tasks/{task_id}/stream` for generation progress events.
-- `GET /api/tasks/{task_id}/audio` for generated audio playback.
-- `GET /api/engines/status` for configured engine health.
-
-## Git Hygiene
-
-The repo ignores local secrets, generated data, dependency folders, Python caches, virtual environments, database volumes, and ACE-Step caches. Keep `.env`, `data/`, `pgdata/`, `node_modules/`, and `.venv/` out of commits.
+Git ignores `.env`, backend `data/`, `pgdata/`, `node_modules/`, `.venv/` and tool caches. Model files live in the shared `~/.cache/audio-remix-lab/acestep-checkpoints` cache. The submodule path `acestep/checkpoints` is only a guarded compatibility symlink; submodule `ignore = untracked` also keeps ACE-Step local files out of `git status`.

@@ -45,6 +45,14 @@ def database_url(url: str, database: str) -> str:
     return make_url(url).set(database=database).render_as_string(hide_password=False)
 
 
+def migration_database_url(url: str) -> str:
+    parsed = make_url(url)
+    name = parsed.database
+    if not name or not name.endswith("_test"):
+        raise ValueError("migration test database names must end with '_test'")
+    return parsed.set(database=f"{name[:-5]}_migrations_test").render_as_string(hide_password=False)
+
+
 def recreate_database(url: str) -> None:
     name = make_url(url).database
     if not name or not name.endswith("_test"):
@@ -101,7 +109,7 @@ def truncate_all_tables(url: str) -> None:
 
 
 def run_alembic(url: str, *args: str) -> str:
-    env = {**os.environ, "DATABASE_URL": url}
+    env = {**os.environ, "DATABASE_URL": url, "TEST_DATABASE_URL": url}
     result = subprocess.run(
         [sys.executable, "-m", "alembic", *args], cwd=BACKEND_DIR, env=env, capture_output=True, text=True
     )
