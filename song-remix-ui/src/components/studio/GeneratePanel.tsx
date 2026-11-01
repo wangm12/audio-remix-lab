@@ -1,9 +1,8 @@
-import { useState, useEffect, useRef } from "react";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useState, useEffect } from "react";
+import { useMutation, useQuery } from "@tanstack/react-query";
 import { Sparkles, Loader2, CheckCircle2, XCircle, Music } from "lucide-react";
-import { toast } from "sonner";
 import { api } from "@/lib/api";
-import { useTaskStream } from "@/hooks/useTaskStream";
+import { useTaskMonitor } from "@/components/layout/TaskMonitorContext";
 import type { Task, GenerateRequest } from "@/lib/types";
 import { ResultPlayer } from "./ResultPlayer";
 
@@ -11,6 +10,7 @@ interface GeneratePanelProps {
   songId: string | null;
   request: GenerateRequest | null;
   disabled: boolean;
+  initialTask?: Task;
 }
 
 function ElapsedTimer() {
@@ -81,50 +81,38 @@ function ProcessingCard() {
   );
 }
 
-export function GeneratePanel({ songId, request, disabled }: GeneratePanelProps) {
-  const [currentTask, setCurrentTask] = useState<Task | null>(null);
-  const qc = useQueryClient();
-  useTaskStream(
-    currentTask && ["pending", "processing"].includes(currentTask.status)
-      ? currentTask.id
-      : null
-  );
-
-  const taskFromCache = currentTask
-    ? (qc.getQueryData<Task>(["task", currentTask.id]) ?? currentTask)
-    : null;
-
+export function GeneratePanel({ songId, request, disabled, initialTask }: GeneratePanelProps) {
+  const [submittedTaskId, setSubmittedTaskId] = useState<string | null>(null);
+  const monitor = useTaskMonitor();
+  const currentTaskId = initialTask && (initialTask.status === "pending" || initialTask.status === "processing")
+    ? initialTask.id
+    : submittedTaskId ?? initialTask?.id ?? null;
+  const taskQuery = useQuery({
+    queryKey: ["task", currentTaskId ?? "none"],
+    queryFn: () => api.tasks.get(currentTaskId!),
+    enabled: false,
+    initialData: initialTask,
+  });
+  const taskFromCache = taskQuery.data ?? null;
+  const songHasActiveTask = !!songId && monitor.activeTasks.some((task) => task.song_id === songId);
   const generate = useMutation({
     mutationFn: () => {
       if (!songId || !request) throw new Error("Missing song or config");
       return api.tasks.generate(songId, request);
     },
     onSuccess: (task) => {
-      setCurrentTask(task);
-      qc.setQueryData(["task", task.id], task);
+      setSubmittedTaskId(task.id);
+      monitor.track(task);
     },
   });
 
   const status = taskFromCache?.status;
   const isProcessing = status === "pending" || status === "processing";
-  const prevStatus = useRef(status);
-
-  useEffect(() => {
-    if (prevStatus.current !== status) {
-      if (status === "completed") {
-        toast.success("Your R&B remix is ready!");
-      } else if (status === "failed") {
-        toast.error(taskFromCache?.error_message || "Generation failed");
-      }
-      prevStatus.current = status;
-    }
-  }, [status, taskFromCache?.error_message]);
-
   return (
     <div className="space-y-4">
       <button
         onClick={() => generate.mutate()}
-        disabled={disabled || generate.isPending || isProcessing}
+        disabled={disabled || generate.isPending || songHasActiveTask}
         className="w-full flex items-center justify-center gap-2 py-3.5 bg-brand text-surface-0 font-semibold rounded-xl hover:bg-brand-bright transition-all disabled:opacity-50 text-base active:scale-[0.98]"
       >
         {isProcessing ? (
@@ -141,6 +129,9 @@ export function GeneratePanel({ songId, request, disabled }: GeneratePanelProps)
       </button>
 
       {isProcessing && <ProcessingCard />}
+      {currentTaskId && monitor.recoveryIds.includes(currentTaskId) && (
+        <p role="status" className="text-xs text-text-secondary">Live updates interrupted. Checking task status…</p>
+      )}
 
       {status === "completed" && taskFromCache && (
         <div className="space-y-3 animate-fade-in-up">
@@ -164,7 +155,7 @@ export function GeneratePanel({ songId, request, disabled }: GeneratePanelProps)
         </div>
       )}
 
-      {generate.isError && !currentTask && (
+      {generate.isError && (
         <p className="text-error text-sm">{generate.error.message}</p>
       )}
     </div>

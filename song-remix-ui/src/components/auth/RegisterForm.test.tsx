@@ -12,6 +12,29 @@ describe("RegisterForm", () => {
     expect(screen.getByLabelText("Invite code (if required)")).toBeInTheDocument();
   });
 
+  it("associates validation feedback with fields and retains entered values", async () => {
+    const { server } = await import("@/test/server");
+    const { http, HttpResponse } = await import("msw");
+    server.use(http.post("/api/auth/register", () => HttpResponse.json({ detail: [
+      { loc: ["body", "email"], msg: "value is not a valid email", input: "secret-SENTINEL", ctx: { password: "secret-SENTINEL" } },
+    ] }, { status: 422 })));
+    await renderWithProviders(<RegisterForm />);
+    fireEvent.change(screen.getByLabelText("Username"), { target: { value: "carol" } });
+    fireEvent.change(screen.getByLabelText("Email"), { target: { value: "person@example.test" } });
+    fireEvent.change(screen.getByLabelText("Password"), { target: { value: "password123" } });
+    fireEvent.click(screen.getByRole("button", { name: "Create account" }));
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("Email: value is not a valid email");
+    const email = screen.getByLabelText("Email");
+    expect(email).toHaveAttribute("aria-invalid", "true");
+    expect(email).toHaveAccessibleDescription("value is not a valid email");
+    expect(screen.getByLabelText("Password")).toHaveAccessibleDescription("At least 8 characters.");
+    expect(email).toHaveValue("person@example.test");
+    expect(screen.getByLabelText("Username")).toHaveValue("carol");
+    expect(document.body).not.toHaveTextContent("secret-SENTINEL");
+    expect(document.body).not.toHaveTextContent("[object Object]");
+  });
+
   it.each([["  code  ", "code"], ["   ", undefined]])("trims invite value %j and omits empty values", async (invite, expected) => {
     let payload: unknown;
     const { server } = await import("@/test/server");

@@ -5,21 +5,29 @@ import { Link } from "@tanstack/react-router";
 import { api } from "@/lib/api";
 import { SongCard } from "@/components/library/SongCard";
 import { EmptyState } from "@/components/shared/EmptyState";
+import { useTaskMonitor } from "@/components/layout/TaskMonitorContext";
 
 export function LibraryPage() {
   const qc = useQueryClient();
+  const monitor = useTaskMonitor();
   const { data: songs, isLoading } = useQuery({
     queryKey: ["songs"],
     queryFn: api.songs.list,
   });
 
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
   const deleteMut = useMutation({
     mutationFn: api.songs.delete,
-    onSuccess: () => {
+    onMutate: () => setDeleteError(null),
+    onSuccess: (_, songId) => {
+      monitor.forgetSong(songId);
       qc.invalidateQueries({ queryKey: ["songs"] });
+      qc.invalidateQueries({ queryKey: ["song"] });
+      qc.invalidateQueries({ queryKey: ["tasks"] });
       setConfirmDelete(null);
     },
+    onError: (error) => setDeleteError(error.message),
   });
 
   return (
@@ -64,6 +72,8 @@ export function LibraryPage() {
           }
         />
       ) : (
+        <>
+        {deleteError && <p role="alert" className="mb-3 text-sm text-error">{deleteError}</p>}
         <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
           {songs.map((song) => (
             <div key={song.id} className="relative group">
@@ -72,6 +82,7 @@ export function LibraryPage() {
                 {confirmDelete === song.id ? (
                   <div className="flex items-center gap-1 bg-surface-2 rounded-lg p-1">
                     <button
+                      disabled={deleteMut.isPending}
                       onClick={() => deleteMut.mutate(song.id)}
                       className="text-xs px-2 py-1 bg-error text-white rounded"
                     >
@@ -100,6 +111,7 @@ export function LibraryPage() {
             </div>
           ))}
         </div>
+        </>
       )}
     </div>
   );

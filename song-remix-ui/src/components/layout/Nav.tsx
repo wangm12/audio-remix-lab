@@ -73,7 +73,7 @@ export function Nav() {
   return (
     <>
       {/* Mobile header */}
-      <div className="md:hidden fixed top-0 left-0 right-0 z-50 flex items-center justify-between px-4 py-3 bg-surface-1 border-b border-surface-3/50">
+      <div className="md:hidden fixed top-0 left-0 right-0 z-[70] flex items-center justify-between px-4 py-3 bg-surface-1 border-b border-surface-3/50">
         <Link to="/studio" className="flex items-center gap-2">
           <Disc3 className="w-6 h-6 text-brand" />
           <span className="font-display text-base font-bold">Remix Studio</span>
@@ -90,7 +90,7 @@ export function Nav() {
       {/* Mobile drawer */}
       {mobileOpen && (
         <div
-          className="md:hidden fixed inset-0 z-40 bg-black/50"
+          className="md:hidden fixed inset-0 z-[60] bg-black/50"
           onClick={() => setMobileOpen(false)}
         >
           <nav

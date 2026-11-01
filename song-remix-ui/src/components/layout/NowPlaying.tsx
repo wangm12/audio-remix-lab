@@ -47,7 +47,7 @@ export function NowPlaying() {
   };
 
   return (
-    <div className="fixed bottom-0 left-0 right-0 bg-surface-1 border-t border-surface-3/50 z-50">
+    <div className="fixed bottom-0 left-0 right-0 md:left-56 bg-surface-1 border-t border-surface-3/50 z-50">
       <div
         className="h-1 bg-surface-3 cursor-pointer"
         onClick={seek}

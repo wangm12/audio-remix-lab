@@ -2,6 +2,7 @@ import { useState, type FormEvent } from "react";
 import { Link } from "@tanstack/react-router";
 import { useRegister } from "@/hooks/useAuth";
 import { Disc3 } from "lucide-react";
+import { ApiError } from "@/lib/api";
 
 export function RegisterForm() {
   const [email, setEmail] = useState("");
@@ -9,6 +10,8 @@ export function RegisterForm() {
   const [password, setPassword] = useState("");
   const [inviteCode, setInviteCode] = useState("");
   const register = useRegister();
+  const issues = register.error instanceof ApiError ? register.error.issues : [];
+  const issueFor = (field: string) => issues.find((issue) => issue.field === field)?.message;
 
   const handleSubmit = (e: FormEvent) => {
     e.preventDefault();
@@ -40,10 +43,13 @@ export function RegisterForm() {
               type="text"
               required
               value={username}
+              aria-invalid={!!issueFor("username")}
+              aria-describedby={issueFor("username") ? "username-error" : undefined}
               onChange={(e) => setUsername(e.target.value)}
               className="w-full px-3 py-2.5 bg-surface-1 border border-surface-3 rounded-lg text-sm focus:border-brand focus:ring-1 focus:ring-brand outline-none transition-colors"
               placeholder="your_name"
             />
+            {issueFor("username") && <p id="username-error" className="text-xs text-error mt-1">{issueFor("username")}</p>}
           </div>
           <div>
             <label htmlFor="email" className="block text-sm font-medium mb-1.5">
@@ -54,10 +60,13 @@ export function RegisterForm() {
               type="email"
               required
               value={email}
+              aria-invalid={!!issueFor("email")}
+              aria-describedby={issueFor("email") ? "email-error" : undefined}
               onChange={(e) => setEmail(e.target.value)}
               className="w-full px-3 py-2.5 bg-surface-1 border border-surface-3 rounded-lg text-sm focus:border-brand focus:ring-1 focus:ring-brand outline-none transition-colors"
               placeholder="you@example.com"
             />
+            {issueFor("email") && <p id="email-error" className="text-xs text-error mt-1">{issueFor("email")}</p>}
           </div>
           <div>
             <label
@@ -71,7 +80,8 @@ export function RegisterForm() {
               type="password"
               required
               minLength={8}
-              aria-describedby="password-hint"
+              aria-invalid={!!issueFor("password")}
+              aria-describedby={issueFor("password") ? "password-hint password-error" : "password-hint"}
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               className="w-full px-3 py-2.5 bg-surface-1 border border-surface-3 rounded-lg text-sm focus:border-brand focus:ring-1 focus:ring-brand outline-none transition-colors"
@@ -80,6 +90,7 @@ export function RegisterForm() {
             <p id="password-hint" className="text-xs text-text-muted mt-1.5">
               At least 8 characters.
             </p>
+            {issueFor("password") && <p id="password-error" className="text-xs text-error mt-1">{issueFor("password")}</p>}
           </div>
           <div>
             <label htmlFor="invite-code" className="block text-sm font-medium mb-1.5">
@@ -90,13 +101,16 @@ export function RegisterForm() {
               type="text"
               autoComplete="off"
               value={inviteCode}
+              aria-invalid={!!issueFor("invite_code")}
+              aria-describedby={issueFor("invite_code") ? "invite-code-error" : undefined}
               onChange={(e) => setInviteCode(e.target.value)}
               className="w-full px-3 py-2.5 bg-surface-1 border border-surface-3 rounded-lg text-sm focus:border-brand focus:ring-1 focus:ring-brand outline-none transition-colors"
             />
+            {issueFor("invite_code") && <p id="invite-code-error" className="text-xs text-error mt-1">{issueFor("invite_code")}</p>}
           </div>
 
           {register.isError && (
-            <p className="text-error text-sm">{register.error.message}</p>
+            <p role="alert" className="text-error text-sm">{register.error.message}</p>
           )}
 
           <button

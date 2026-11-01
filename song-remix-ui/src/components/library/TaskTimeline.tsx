@@ -2,6 +2,7 @@ import { useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { Trash2, CheckCircle2, XCircle, Clock, Loader2 } from "lucide-react";
 import { api } from "@/lib/api";
+import { useTaskMonitor } from "@/components/layout/TaskMonitorContext";
 import type { Task } from "@/lib/types";
 import { ResultPlayer } from "../studio/ResultPlayer";
 
@@ -11,21 +12,26 @@ interface TaskTimelineProps {
 
 export function TaskTimeline({ tasks }: TaskTimelineProps) {
   const qc = useQueryClient();
+  const monitor = useTaskMonitor();
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
 
   const deleteMut = useMutation({
     mutationFn: api.tasks.delete,
-    onSuccess: () => {
+    onMutate: () => setDeleteError(null),
+    onSuccess: (_, id) => {
+      monitor.forgetTask(id);
       qc.invalidateQueries({ queryKey: ["songs"] });
       qc.invalidateQueries({ queryKey: ["song"] });
       qc.invalidateQueries({ queryKey: ["tasks"] });
       setConfirmDelete(null);
     },
+    onError: (error) => setDeleteError(error.message),
   });
 
   if (tasks.length === 0) {
     return (
-      <p className="text-sm text-text-muted py-4">No generations yet.</p>
+      <>{deleteError && <p role="alert" className="text-sm text-error">{deleteError}</p>}<p className="text-sm text-text-muted py-4">No generations yet.</p></>
     );
   }
 
@@ -38,6 +44,7 @@ export function TaskTimeline({ tasks }: TaskTimelineProps) {
 
   return (
     <div className="space-y-3">
+      {deleteError && <p role="alert" className="text-sm text-error">{deleteError}</p>}
       {tasks.map((task) => (
         <div
           key={task.id}
@@ -60,6 +67,7 @@ export function TaskTimeline({ tasks }: TaskTimelineProps) {
               {confirmDelete === task.id ? (
                 <div className="flex items-center gap-1">
                   <button
+                    disabled={deleteMut.isPending}
                     onClick={() => deleteMut.mutate(task.id)}
                     className="text-xs px-2 py-1 bg-error text-white rounded"
                   >

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useParams } from "@tanstack/react-router";
 import { ArrowLeft, Loader2 } from "lucide-react";
@@ -10,6 +10,7 @@ import { GeneratePanel } from "@/components/studio/GeneratePanel";
 import { LyricsEditor } from "@/components/studio/LyricsEditor";
 import { TaskTimeline } from "@/components/library/TaskTimeline";
 import type { Preset, GenerateRequest, Song } from "@/lib/types";
+import { useTaskMonitor } from "@/components/layout/TaskMonitorContext";
 
 export function SongStudioPage() {
   const { songId } = useParams({ from: "/studio/$songId" });
@@ -38,12 +39,18 @@ export function SongStudioPage() {
 }
 
 function SongStudio({ song }: { song: Song }) {
+  const { track } = useTaskMonitor();
   const [selectedPreset, setSelectedPreset] = useState<Preset | null>(null);
   const [customPrompt, setCustomPrompt] = useState("");
   const [coverStrength, setCoverStrength] = useState(0.5);
   const [vocalGender, setVocalGender] = useState("auto");
   const [vocalLanguage, setVocalLanguage] = useState("zh");
   const [lyrics, setLyrics] = useState(song.lyrics ?? "");
+  useEffect(() => {
+    for (const task of song.tasks ?? []) {
+      if (task.status === "pending" || task.status === "processing") track(task);
+    }
+  }, [song.tasks, track]);
 
   const hasStyle = selectedPreset || customPrompt.trim();
   const generateRequest: GenerateRequest | null = hasStyle
@@ -52,7 +59,7 @@ function SongStudio({ song }: { song: Song }) {
           ? { style_preset_id: selectedPreset.id }
           : { style_prompt: customPrompt.trim() }),
         vocal_gender: vocalGender,
-        lyrics: lyrics.trim() || undefined,
+        lyrics,
         engine_params: { cover_strength: coverStrength, vocal_language: vocalLanguage },
       }
     : null;
@@ -100,6 +107,7 @@ function SongStudio({ song }: { song: Song }) {
           songId={song.id}
           request={generateRequest}
           disabled={!hasStyle}
+          initialTask={song.tasks?.find((task) => task.status === "pending" || task.status === "processing") ?? song.tasks?.[0]}
         />
 
         {song.tasks && song.tasks.length > 0 && (

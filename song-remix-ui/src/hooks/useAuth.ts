@@ -2,6 +2,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/api";
 import { setToken, clearToken, isAuthenticated } from "@/lib/auth";
 import { useNavigate } from "@tanstack/react-router";
+import { useTaskMonitor } from "@/components/layout/TaskMonitorContext";
 
 export function useUser() {
   return useQuery({
@@ -41,7 +42,9 @@ export function useRegister() {
 export function useLogout() {
   const qc = useQueryClient();
   const navigate = useNavigate();
+  const monitor = useTaskMonitor();
   return async () => {
+    monitor.stopAll();
     try {
       await api.auth.logout();
     } catch {

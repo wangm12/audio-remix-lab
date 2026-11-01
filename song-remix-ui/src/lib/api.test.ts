@@ -1,7 +1,7 @@
 import { http, HttpResponse } from "msw";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { server } from "@/test/server";
-import { api } from "./api";
+import { api, authRedirect } from "./api";
 import { getToken, setToken } from "./auth";
 
 describe("api request helper", () => {
@@ -27,6 +27,50 @@ describe("api request helper", () => {
     await expect(api.songs.list()).rejects.toThrow("boom");
   });
 
+  it("normalizes validation issues without reflecting submitted secrets", async () => {
+    server.use(http.post("/api/auth/register", () => HttpResponse.json({ detail: [
+      { loc: ["body", "email"], msg: "value is not a valid email", input: "person@example.test", ctx: { secret: "password-SENTINEL" } },
+      { loc: ["body", "password"], msg: "too short", input: "invite-SENTINEL" },
+    ] }, { status: 422 })));
+    const result = api.auth.register({ email: "person@example.test", username: "p", password: "password-SENTINEL", invite_code: "invite-SENTINEL" });
+    let error: Error | undefined;
+    try { await result; } catch (caught) { error = caught as Error; }
+    expect(error?.message).toContain("Email: value is not a valid email");
+    expect(error?.message).toContain("Password: too short");
+    expect(error?.message).not.toMatch(/SENTINEL|input|ctx/);
+    expect((error as Error & { issues: unknown[] }).issues).toEqual([
+      { field: "email", message: "value is not a valid email" },
+      { field: "password", message: "too short" },
+    ]);
+  });
+
+  it.each([
+    [{ detail: { nested: "value" } }, "Some information"],
+    [{ detail: ["bad"] }, "Some information"],
+    ["not-json", "Some information needs to be corrected"],
+    [{ detail: "Conflict" }, "Conflict"],
+  ])("uses a safe readable fallback for malformed and scalar errors", async (body, expected) => {
+    server.use(http.get("/api/songs", () => typeof body === "string"
+      ? HttpResponse.text(body, { status: 422 })
+      : HttpResponse.json(body, { status: 422 })));
+    await expect(api.songs.list()).rejects.toThrow(expected);
+  });
+
+  it("supports paginated task discovery and propagates abort signals", async () => {
+    const controller = new AbortController();
+    let requestUrl = "";
+    let sameSignal = false;
+    server.use(http.get("/api/tasks", ({ request }) => {
+      requestUrl = request.url;
+      return HttpResponse.json([]);
+    }));
+    await api.tasks.list({ limit: 50, offset: 100, signal: controller.signal });
+    sameSignal = controller.signal.aborted === false;
+    expect(new URL(requestUrl).searchParams.get("limit")).toBe("50");
+    expect(new URL(requestUrl).searchParams.get("offset")).toBe("100");
+    expect(sameSignal).toBe(true);
+  });
+
   it.each(["login", "register"] as const)("keeps %s 401 errors in the form", async (endpoint) => {
     setToken("still-authenticated");
     server.use(
@@ -37,6 +81,16 @@ describe("api request helper", () => {
       : api.auth.register({ email: "a@example.com", username: "a", password: "wrong" });
     await expect(result).rejects.toThrow("Invalid credentials");
     expect(getToken()).toBe("still-authenticated");
+  });
+
+  it("clears the token and rejects non-form 401 responses", async () => {
+    setToken("expired-token");
+    server.use(http.get("/api/songs", () => HttpResponse.json({ detail: "secret" }, { status: 401 })));
+    const redirect = vi.spyOn(authRedirect, "toLogin").mockImplementation(() => {});
+    await expect(api.songs.list()).rejects.toThrow("session has expired");
+    expect(getToken()).toBeNull();
+    expect(redirect).toHaveBeenCalledOnce();
+    redirect.mockRestore();
   });
 
   it("uploads a song source as multipart to the song's source endpoint", async () => {
