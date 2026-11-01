@@ -17,7 +17,7 @@ export function StudioPage() {
   const [vocalGender, setVocalGender] = useState("auto");
   const [vocalLanguage, setVocalLanguage] = useState("zh");
 
-  const handleSongCreated = (id: string, _audioPath: string | null) => {
+  const handleSongCreated = (id: string) => {
     setSongId(id);
     setStep("configure");
     navigate({ to: "/studio/$songId", params: { songId: id } });

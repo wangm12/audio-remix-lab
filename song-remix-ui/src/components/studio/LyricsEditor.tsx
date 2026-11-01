@@ -21,7 +21,7 @@ export function LyricsEditor({
 }: LyricsEditorProps) {
   const qc = useQueryClient();
   const [saved, setSaved] = useState(true);
-  const saveTimerRef = useRef<ReturnType<typeof setTimeout>>();
+  const saveTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
 
   const isDirty = lyrics !== initialLyrics;
 

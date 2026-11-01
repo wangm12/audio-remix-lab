@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useParams } from "@tanstack/react-router";
 import { ArrowLeft, Loader2 } from "lucide-react";
@@ -9,7 +9,7 @@ import { EngineConfig } from "@/components/studio/EngineConfig";
 import { GeneratePanel } from "@/components/studio/GeneratePanel";
 import { LyricsEditor } from "@/components/studio/LyricsEditor";
 import { TaskTimeline } from "@/components/library/TaskTimeline";
-import type { Preset, GenerateRequest } from "@/lib/types";
+import type { Preset, GenerateRequest, Song } from "@/lib/types";
 
 export function SongStudioPage() {
   const { songId } = useParams({ from: "/studio/$songId" });
@@ -17,18 +17,6 @@ export function SongStudioPage() {
     queryKey: ["song", songId],
     queryFn: () => api.songs.get(songId),
   });
-
-  const [selectedPreset, setSelectedPreset] = useState<Preset | null>(null);
-  const [customPrompt, setCustomPrompt] = useState("");
-  const [engine, setEngine] = useState("acestep");
-  const [coverStrength, setCoverStrength] = useState(0.5);
-  const [vocalGender, setVocalGender] = useState("auto");
-  const [vocalLanguage, setVocalLanguage] = useState("zh");
-  const [lyrics, setLyrics] = useState("");
-
-  useEffect(() => {
-    if (song?.lyrics) setLyrics(song.lyrics);
-  }, [song?.lyrics]);
 
   if (isLoading) {
     return (
@@ -45,6 +33,18 @@ export function SongStudioPage() {
       </div>
     );
   }
+
+  return <SongStudio key={song.id} song={song} />;
+}
+
+function SongStudio({ song }: { song: Song }) {
+  const [selectedPreset, setSelectedPreset] = useState<Preset | null>(null);
+  const [customPrompt, setCustomPrompt] = useState("");
+  const [engine, setEngine] = useState("acestep");
+  const [coverStrength, setCoverStrength] = useState(0.5);
+  const [vocalGender, setVocalGender] = useState("auto");
+  const [vocalLanguage, setVocalLanguage] = useState("zh");
+  const [lyrics, setLyrics] = useState(song.lyrics ?? "");
 
   const hasStyle = selectedPreset || customPrompt.trim();
   const generateRequest: GenerateRequest | null = hasStyle
@@ -84,7 +84,7 @@ export function SongStudioPage() {
           onCustom={(p) => { setCustomPrompt(p); setSelectedPreset(null); }}
         />
         <LyricsEditor
-          songId={songId}
+          songId={song.id}
           initialLyrics={song.lyrics ?? ""}
           lyrics={lyrics}
           onLyricsChange={setLyrics}
@@ -101,7 +101,7 @@ export function SongStudioPage() {
           onVocalLanguageChange={setVocalLanguage}
         />
         <GeneratePanel
-          songId={songId}
+          songId={song.id}
           request={generateRequest}
           disabled={!hasStyle}
         />
