@@ -1,5 +1,4 @@
 import asyncio
-import os
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -8,9 +7,9 @@ from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sse_starlette.sse import EventSourceResponse
 
-from app.core.deps import get_current_user, get_optional_user
+from app.core.deps import get_current_user, get_media_user
 from app.core.sse import task_event_generator
-from app.database import get_db
+from app.database import async_session, get_db
 from app.models.preset import StylePreset
 from app.models.song import Song
 from app.models.task import GenerationTask
@@ -18,6 +17,7 @@ from app.models.user import User
 from app.schemas.task import GenerateRequest, TaskResponse
 from app.services.engine_manager import engine_manager
 from app.services.task_service import run_generation
+from app.utils.storage import delete_legacy_file, legacy_file_path
 
 router = APIRouter(prefix="/api", tags=["tasks"])
 
@@ -65,7 +65,6 @@ async def generate(
         await db.refresh(song)
 
     style_prompt = req.style_prompt or (preset.acestep_caption if preset else None)
-
     task = GenerationTask(
         song_id=song.id,
         user_id=user.id,
@@ -79,18 +78,13 @@ async def generate(
     db.add(task)
     await db.commit()
     await db.refresh(task)
-
     asyncio.get_event_loop().create_task(run_generation(task.id))
-
     return task
 
 
 @router.get("/tasks", response_model=list[TaskResponse])
 async def list_tasks(
-    db: AsyncSession = Depends(get_db),
-    user: User = Depends(get_current_user),
-    limit: int = 50,
-    offset: int = 0,
+    db: AsyncSession = Depends(get_db), user: User = Depends(get_current_user), limit: int = 50, offset: int = 0
 ):
     result = await db.execute(
         select(GenerationTask)
@@ -103,55 +97,31 @@ async def list_tasks(
 
 
 @router.get("/tasks/{task_id}", response_model=TaskResponse)
-async def get_task(
-    task_id: UUID,
-    db: AsyncSession = Depends(get_db),
-    user: User = Depends(get_current_user),
-):
+async def get_task(task_id: UUID, db: AsyncSession = Depends(get_db), user: User = Depends(get_current_user)):
     return await _get_owned_task(db, task_id, user)
 
 
 @router.delete("/tasks/{task_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_task(
-    task_id: UUID,
-    db: AsyncSession = Depends(get_db),
-    user: User = Depends(get_current_user),
-):
+async def delete_task(task_id: UUID, db: AsyncSession = Depends(get_db), user: User = Depends(get_current_user)):
     task = await _get_owned_task(db, task_id, user)
-    if task.output_audio_path and os.path.exists(task.output_audio_path):
-        os.remove(task.output_audio_path)
+    output_path = task.output_audio_path
     await db.delete(task)
     await db.commit()
+    delete_legacy_file(output_path)
 
 
 @router.get("/tasks/{task_id}/audio")
-async def get_task_audio(
-    task_id: UUID,
-    token: str | None = None,
-    db: AsyncSession = Depends(get_db),
-    user: User | None = Depends(get_optional_user),
-):
-    # Support auth via query param for <audio> and <a> elements
-    if user is None and token:
-        from app.core.security import decode_access_token
-
-        user_id = decode_access_token(token)
-        if user_id:
-            result = await db.execute(select(User).where(User.id == UUID(user_id)))
-            user = result.scalar_one_or_none()
-
-    if user is None:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
-
+async def get_task_audio(task_id: UUID, db: AsyncSession = Depends(get_db), user: User = Depends(get_media_user)):
     task = await _get_owned_task(db, task_id, user)
-    if not task.output_audio_path or not os.path.exists(task.output_audio_path):
+    path = legacy_file_path(task.output_audio_path)
+    if path is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Audio not available")
-    return FileResponse(task.output_audio_path, media_type="audio/mpeg", filename=f"{task.id}.mp3")
+    return FileResponse(path, media_type="audio/mpeg", filename=f"{task.id}.mp3")
 
 
 @router.get("/tasks/{task_id}/stream")
-async def stream_task_progress(
-    task_id: UUID,
-    db: AsyncSession = Depends(get_db),
-):
-    return EventSourceResponse(task_event_generator(task_id, db))
+async def stream_task_progress(task_id: UUID, user: User = Depends(get_media_user)):
+    # Both authentication and ownership lookups finish before the response body starts.
+    async with async_session() as db:
+        await _get_owned_task(db, task_id, user)
+    return EventSourceResponse(task_event_generator(task_id, user.id))

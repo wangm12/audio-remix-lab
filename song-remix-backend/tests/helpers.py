@@ -201,3 +201,14 @@ def write_sine_wav(path: Path, seconds: float = 1.0, sample_rate: int = 8000, fr
 def convert_audio(source: Path, destination: Path) -> Path:
     subprocess.run(["ffmpeg", "-y", "-v", "error", "-i", str(source), str(destination)], check=True)
     return destination
+
+
+async def set_task_status(task_id: str, status: str) -> None:
+    from app.database import async_session
+    from app.models.task import GenerationTask
+
+    async with async_session() as session:
+        task = await session.get(GenerationTask, UUID(task_id))
+        assert task is not None
+        task.status = status
+        await session.commit()

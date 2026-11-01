@@ -100,12 +100,7 @@ export const api = {
       }),
     delete: (id: string) =>
       request<void>(`/tasks/${id}`, { method: "DELETE" }),
-    audioUrl: (id: string) => {
-      const token = getToken();
-      return token
-        ? `${BASE}/tasks/${id}/audio?token=${encodeURIComponent(token)}`
-        : `${BASE}/tasks/${id}/audio`;
-    },
+    audioUrl: (id: string) => `${BASE}/tasks/${id}/audio`,
     streamUrl: (id: string) => `${BASE}/tasks/${id}/stream`,
   },
 

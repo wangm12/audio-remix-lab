@@ -33,3 +33,7 @@ class GenerationTask(Base):
     song: Mapped["Song"] = relationship("Song", back_populates="tasks")  # noqa: F821
     user: Mapped["User | None"] = relationship("User", back_populates="tasks")  # noqa: F821
     style_preset: Mapped["StylePreset | None"] = relationship("StylePreset", lazy="selectin")  # noqa: F821
+
+    @property
+    def has_output(self) -> bool:
+        return bool(self.output_audio_path)

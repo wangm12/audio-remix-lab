@@ -23,7 +23,7 @@ export interface Task {
   style_prompt: string | null;
   vocal_gender: string;
   engine_params: Record<string, unknown> | null;
-  output_audio_path: string | null;
+  has_output: boolean;
   duration_seconds: number | null;
   error_message: string | null;
   created_at: string;

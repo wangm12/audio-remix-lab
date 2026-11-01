@@ -2,6 +2,7 @@ from uuid import UUID
 from datetime import datetime
 
 from pydantic import BaseModel
+from pydantic import field_serializer
 
 
 class GenerateRequest(BaseModel):
@@ -21,7 +22,7 @@ class TaskResponse(BaseModel):
     style_prompt: str | None
     vocal_gender: str
     engine_params: dict | None
-    output_audio_path: str | None
+    has_output: bool
     duration_seconds: float | None
     error_message: str | None
     created_at: datetime
@@ -29,3 +30,7 @@ class TaskResponse(BaseModel):
     completed_at: datetime | None
 
     model_config = {"from_attributes": True}
+
+    @field_serializer("error_message")
+    def public_error_message(self, error_message: str | None) -> str | None:
+        return "Generation failed" if error_message else None

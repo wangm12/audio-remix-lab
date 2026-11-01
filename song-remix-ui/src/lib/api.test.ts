@@ -40,6 +40,12 @@ describe("api request helper", () => {
     expect(contentType).toMatch(/^multipart\/form-data; boundary=/);
   });
 
+  it("builds media URLs without putting the token in the query string", () => {
+    setToken("abc123");
+    expect(api.tasks.audioUrl("task-1")).toBe("/api/tasks/task-1/audio");
+    expect(api.tasks.streamUrl("task-1")).toBe("/api/tasks/task-1/stream");
+  });
+
   it("logs out through the API so the media cookie is cleared", async () => {
     let calls = 0;
     server.use(

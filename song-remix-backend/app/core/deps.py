@@ -1,12 +1,12 @@
 from uuid import UUID
 
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.security import ACCESS_SCOPE, decode_access_token
-from app.database import get_db
+from app.core.security import ACCESS_SCOPE, MEDIA_SCOPE, decode_access_token
+from app.database import async_session, get_db
 from app.models.user import User
 
 MEDIA_COOKIE_NAME = "remix_media"
@@ -39,10 +39,18 @@ async def get_current_user(
     return user
 
 
-async def get_optional_user(
+async def get_media_user(
+    request: Request,
     credentials: HTTPAuthorizationCredentials | None = Depends(optional_bearer_scheme),
-    db: AsyncSession = Depends(get_db),
-) -> User | None:
-    if credentials is None:
-        return None
-    return await _user_from_subject(db, decode_access_token(credentials.credentials, scope=ACCESS_SCOPE))
+) -> User:
+    """Authenticate a side-effect-free media GET; release the lookup session before streaming."""
+    if credentials is not None:
+        subject = decode_access_token(credentials.credentials, scope=ACCESS_SCOPE)
+    else:
+        cookie = request.cookies.get(MEDIA_COOKIE_NAME)
+        subject = decode_access_token(cookie, scope=MEDIA_SCOPE) if cookie else None
+    async with async_session() as db:
+        user = await _user_from_subject(db, subject)
+    if user is None:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
+    return user
