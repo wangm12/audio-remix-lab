@@ -18,9 +18,7 @@ def assert_application_database_is_test(actual_url: str | URL, expected_url: str
         raise RuntimeError("TEST_DATABASE_URL must name a database ending with '_test'")
     if actual != expected:
         raise RuntimeError(
-            "Application database engine URL does not match TEST_DATABASE_URL; "
-            f"actual={actual.render_as_string(hide_password=True)!r}, "
-            f"expected={expected.render_as_string(hide_password=True)!r}"
+            "Application database engine URL does not match TEST_DATABASE_URL"
         )
     if not actual.database or not actual.database.endswith("_test"):
         raise RuntimeError("Application database engine must target a database ending with '_test'")
