@@ -67,11 +67,19 @@ export const api = {
         method: "POST",
         body: JSON.stringify(data),
       }),
-    update: (id: string, data: Partial<Song>) =>
+    update: (id: string, data: Partial<Pick<Song, "title" | "artist" | "lyrics">>) =>
       request<Song>(`/songs/${id}`, {
         method: "PATCH",
         body: JSON.stringify(data),
       }),
+    uploadSource: (id: string, file: File) => {
+      const form = new FormData();
+      form.append("file", file);
+      return request<Song>(`/songs/${id}/source`, {
+        method: "POST",
+        body: form,
+      });
+    },
     delete: (id: string) =>
       request<void>(`/songs/${id}`, { method: "DELETE" }),
     structureLyrics: (id: string, lyrics: string) =>
@@ -113,16 +121,5 @@ export const api = {
 
   engines: {
     status: () => request<EngineStatus>("/engines/status"),
-  },
-
-  upload: {
-    audio: async (file: File) => {
-      const form = new FormData();
-      form.append("file", file);
-      return request<{ path: string; size: number }>("/upload/audio", {
-        method: "POST",
-        body: form,
-      });
-    },
   },
 };

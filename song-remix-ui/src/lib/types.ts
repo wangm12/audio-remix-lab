@@ -10,7 +10,7 @@ export interface Song {
   title: string;
   artist: string | null;
   lyrics: string | null;
-  source_audio_path: string | null;
+  has_source: boolean;
   created_at: string;
   tasks?: Task[];
 }

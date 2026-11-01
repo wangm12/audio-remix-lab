@@ -5,7 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import settings
 from app.services.engine_manager import init_engines, engine_manager
-from app.api import auth, songs, tasks, presets, engines, upload
+from app.api import auth, songs, tasks, presets, engines
 
 
 @asynccontextmanager
@@ -30,7 +30,6 @@ app.include_router(songs.router)
 app.include_router(tasks.router)
 app.include_router(presets.router)
 app.include_router(engines.router)
-app.include_router(upload.router)
 
 
 @app.get("/")

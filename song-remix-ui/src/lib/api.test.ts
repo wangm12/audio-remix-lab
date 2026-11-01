@@ -26,4 +26,17 @@ describe("api request helper", () => {
     );
     await expect(api.songs.list()).rejects.toThrow("boom");
   });
+
+  it("uploads a song source as multipart to the song's source endpoint", async () => {
+    let contentType: string | null = null;
+    server.use(
+      http.post("/api/songs/song-1/source", ({ request }) => {
+        contentType = request.headers.get("Content-Type");
+        return HttpResponse.json({ id: "song-1", has_source: true });
+      }),
+    );
+    const song = await api.songs.uploadSource("song-1", new File(["RIFF"], "a.wav", { type: "audio/wav" }));
+    expect(song.has_source).toBe(true);
+    expect(contentType).toMatch(/^multipart\/form-data; boundary=/);
+  });
 });

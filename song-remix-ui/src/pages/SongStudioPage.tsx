@@ -86,7 +86,7 @@ function SongStudio({ song }: { song: Song }) {
           initialLyrics={song.lyrics ?? ""}
           lyrics={lyrics}
           onLyricsChange={setLyrics}
-          hasSourceAudio={!!song.source_audio_path}
+          hasSourceAudio={song.has_source}
         />
         <EngineConfig
           coverStrength={coverStrength}

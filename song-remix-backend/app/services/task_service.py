@@ -10,6 +10,7 @@ from app.database import async_session
 from app.models.task import GenerationTask
 from app.models.song import Song
 from app.services.engine_manager import engine_manager
+from app.utils.storage import resolve_key
 
 
 async def run_generation(task_id: uuid.UUID):
@@ -45,7 +46,7 @@ async def run_generation(task_id: uuid.UUID):
         try:
             params = task.engine_params or {}
             engine_task_id = await engine.submit_cover(
-                source_audio_path=song.source_audio_path or "",
+                source_audio_path=str(resolve_key(song.source_audio_key)) if song.source_audio_key else "",
                 caption=task.style_prompt or "",
                 cover_strength=params.get("cover_strength", 0.5),
                 vocal_gender=task.vocal_gender,

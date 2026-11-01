@@ -42,3 +42,33 @@ def test_drop_suno_tags_keeps_presets_and_downgrade_restores_the_column(scratch_
     assert fetch_sql(scratch_db, "SELECT name FROM style_presets") == [("Legacy",)]
     run_alembic(scratch_db, "downgrade", "31c82b7a834b")
     assert "suno_tags" in _columns(scratch_db, "style_presets")
+
+
+def test_source_audio_key_migration_keeps_only_legacy_upload_paths(scratch_db):
+    run_alembic(scratch_db, "upgrade", "5b1d0c7e9a42")
+    user_id = uuid.uuid4()
+    execute_sql(
+        scratch_db,
+        "INSERT INTO users (id, email, username, hashed_password) VALUES ($1, 'm@example.com', 'm', 'x')",
+        user_id,
+    )
+    for title, path in (("a", "/Users/me/app/data/uploads/abc.mp3"), ("b", "/etc/passwd"), ("c", None)):
+        execute_sql(
+            scratch_db,
+            "INSERT INTO songs (id, title, source_audio_path, created_by) VALUES ($1, $2, $3, $4)",
+            uuid.uuid4(),
+            title,
+            path,
+            user_id,
+        )
+
+    run_alembic(scratch_db, "upgrade", "7c3e2a9d4f10")
+    assert fetch_sql(scratch_db, "SELECT title, source_audio_key FROM songs ORDER BY title") == [
+        ("a", "uploads/abc.mp3"),
+        ("b", None),
+        ("c", None),
+    ]
+
+    run_alembic(scratch_db, "downgrade", "5b1d0c7e9a42")
+    assert "source_audio_path" in _columns(scratch_db, "songs")
+    assert fetch_sql(scratch_db, "SELECT source_audio_path FROM songs WHERE title = 'a'") == [("uploads/abc.mp3",)]

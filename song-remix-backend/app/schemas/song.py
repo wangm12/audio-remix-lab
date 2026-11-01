@@ -1,7 +1,7 @@
 from uuid import UUID
 from datetime import datetime
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 
 class SongCreate(BaseModel):
@@ -11,10 +11,11 @@ class SongCreate(BaseModel):
 
 
 class SongUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     title: str | None = None
     artist: str | None = None
     lyrics: str | None = None
-    source_audio_path: str | None = None
 
 
 class SongResponse(BaseModel):
@@ -22,7 +23,7 @@ class SongResponse(BaseModel):
     title: str
     artist: str | None
     lyrics: str | None
-    source_audio_path: str | None
+    has_source: bool
     created_at: datetime
 
     model_config = {"from_attributes": True}

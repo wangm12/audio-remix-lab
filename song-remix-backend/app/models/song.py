@@ -15,9 +15,13 @@ class Song(Base):
     title: Mapped[str] = mapped_column(String(255), nullable=False)
     artist: Mapped[str | None] = mapped_column(String(255), nullable=True)
     lyrics: Mapped[str | None] = mapped_column(Text, nullable=True)
-    source_audio_path: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    source_audio_key: Mapped[str | None] = mapped_column(String(500), nullable=True)
     created_by: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     creator: Mapped["User | None"] = relationship("User", back_populates="songs")  # noqa: F821
     tasks: Mapped[list["GenerationTask"]] = relationship("GenerationTask", back_populates="song", lazy="selectin", cascade="all, delete-orphan")  # noqa: F821
+
+    @property
+    def has_source(self) -> bool:
+        return bool(self.source_audio_key)

@@ -3,13 +3,14 @@ import { Upload, Music2, X } from "lucide-react";
 import { api } from "@/lib/api";
 
 interface SongSetupProps {
-  onSongCreated: (songId: string, audioPath: string | null) => void;
+  onSongCreated: (songId: string) => void;
 }
 
 export function SongSetup({ onSongCreated }: SongSetupProps) {
   const [title, setTitle] = useState("");
   const [artist, setArtist] = useState("");
   const [audioFile, setAudioFile] = useState<File | null>(null);
+  const [createdSongId, setCreatedSongId] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState("");
   const fileRef = useRef<HTMLInputElement>(null);
@@ -20,22 +21,21 @@ export function SongSetup({ onSongCreated }: SongSetupProps) {
     setUploading(true);
 
     try {
-      let audioPath: string | null = null;
+      let songId = createdSongId;
+      if (!songId) {
+        const song = await api.songs.create({
+          title,
+          artist: artist || undefined,
+        });
+        songId = song.id;
+        setCreatedSongId(song.id);
+      }
+
       if (audioFile) {
-        const upload = await api.upload.audio(audioFile);
-        audioPath = upload.path;
+        await api.songs.uploadSource(songId, audioFile);
       }
 
-      const song = await api.songs.create({
-        title,
-        artist: artist || undefined,
-      });
-
-      if (audioPath) {
-        await api.songs.update(song.id, { source_audio_path: audioPath });
-      }
-
-      onSongCreated(song.id, audioPath);
+      onSongCreated(songId);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to create song");
     } finally {
@@ -105,7 +105,8 @@ export function SongSetup({ onSongCreated }: SongSetupProps) {
         <input
           ref={fileRef}
           type="file"
-          accept="audio/*"
+          accept="audio/*,.mp3,.wav,.flac,.ogg,.m4a"
+          aria-label="Source audio file"
           className="hidden"
           onChange={(e) => setAudioFile(e.target.files?.[0] ?? null)}
         />
