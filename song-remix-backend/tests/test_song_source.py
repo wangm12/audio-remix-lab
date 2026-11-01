@@ -64,6 +64,49 @@ async def test_reupload_replaces_the_previous_source(client, db, tmp_path):
     assert resolve_key(row.source_audio_key).is_file()
 
 
+@pytest.mark.parametrize("extension", ["wav", "flac"])
+async def test_upload_response_survives_obsolete_source_cleanup_failure(
+    client, db, tmp_path, monkeypatch, caplog, extension
+):
+    alice = await register_user(client)
+    song = await create_song(client, alice)
+    wav = write_sine_wav(tmp_path / "original.wav")
+    original = await client.post(f"/api/songs/{song['id']}/source", files=_file(wav), headers=alice.headers)
+    assert original.status_code == 200
+    row = await db.get(Song, uuid.UUID(song["id"]))
+    await db.refresh(row)
+    old_key = row.source_audio_key
+    old_bytes = resolve_key(old_key).read_bytes()
+    replacement = wav if extension == "wav" else convert_audio(wav, tmp_path / "replacement.flac")
+    original_delete = songs_api.delete_key
+
+    def fail_obsolete_delete(key):
+        if key == old_key:
+            raise OSError("simulated obsolete source cleanup failure")
+        return original_delete(key)
+
+    monkeypatch.setattr(songs_api, "delete_key", fail_obsolete_delete)
+    response = await client.post(
+        f"/api/songs/{song['id']}/source", files=_file(replacement), headers=alice.headers
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json() == {
+        "id": song["id"],
+        "title": song["title"],
+        "artist": song["artist"],
+        "lyrics": song["lyrics"],
+        "has_source": True,
+        "created_at": song["created_at"],
+    }
+    assert "source_audio_key" not in response.json()
+    await db.refresh(row)
+    assert row.source_audio_key != old_key
+    assert resolve_key(row.source_audio_key).read_bytes() == replacement.read_bytes()
+    assert resolve_key(old_key).read_bytes() == old_bytes
+    assert "Could not remove an obsolete song source after upload" in caplog.text
+
+
 async def test_overlapping_same_extension_uploads_keep_the_committed_source(client, db, tmp_path, monkeypatch):
     alice = await register_user(client)
     song = await create_song(client, alice)

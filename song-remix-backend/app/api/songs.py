@@ -196,6 +196,10 @@ async def upload_source(
                 if check is None or check.source_audio_key != new_key:
                     delete_key(new_key)
             raise
+        # Build a detached response while the committed Song state is still
+        # loaded. Cleanup rollback may expire this ORM instance, and cleanup
+        # can race with Song deletion after the source commit.
+        response = SongResponse.model_validate(song)
         # Cleanup follows a committed reference change and rechecks the current key
         # while holding the same Song row lock used by later replacements.
         try:
@@ -211,7 +215,7 @@ async def upload_source(
         except Exception:
             await db.rollback()
             logging.getLogger(__name__).warning("Could not remove an obsolete song source after upload", exc_info=True)
-    return song
+    return response
 
 
 @router.post(
