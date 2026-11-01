@@ -3,6 +3,7 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { FileText, Save, Check, Wand2, Loader2 } from "lucide-react";
 import { toast } from "sonner";
 import { api } from "@/lib/api";
+import { captureAuthSession, isAuthSessionCurrent, type AuthSessionLease } from "@/lib/auth";
 
 interface LyricsEditorProps {
   songId: string;
@@ -26,34 +27,37 @@ export function LyricsEditor({
   const isDirty = lyrics !== initialLyrics;
 
   const saveMut = useMutation({
-    mutationFn: (newLyrics: string) =>
+    mutationFn: ({ newLyrics }: { newLyrics: string; session: AuthSessionLease }) =>
       api.songs.update(songId, { lyrics: newLyrics || null }),
-    onSuccess: () => {
+    onSuccess: (_data, variables) => {
+      if (!isAuthSessionCurrent(variables.session)) return;
       setSaved(true);
       qc.invalidateQueries({ queryKey: ["song", songId] });
     },
   });
 
   const structureMut = useMutation({
-    mutationFn: (lyricsText: string) =>
+    mutationFn: ({ lyricsText }: { lyricsText: string; session: AuthSessionLease }) =>
       api.songs.structureLyrics(songId, lyricsText),
-    onSuccess: (data) => {
+    onSuccess: (data, variables) => {
+      if (!isAuthSessionCurrent(variables.session)) return;
       onLyricsChange(data.lyrics);
       setSaved(false);
       if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
-      saveMut.mutate(data.lyrics);
+      saveMut.mutate({ newLyrics: data.lyrics, session: variables.session });
       toast.success("Interlude markers added — review and edit as needed");
     },
-    onError: (err: Error) => {
-      toast.error(err.message || "Failed to auto-structure lyrics");
+    onError: (err: Error, variables) => {
+      if (isAuthSessionCurrent(variables.session)) toast.error(err.message || "Failed to auto-structure lyrics");
     },
   });
 
   const debouncedSave = useCallback(
     (value: string) => {
       if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
+      const session = captureAuthSession();
       saveTimerRef.current = setTimeout(() => {
-        saveMut.mutate(value);
+        saveMut.mutate({ newLyrics: value, session });
       }, 1500);
     },
     [saveMut],
@@ -73,7 +77,7 @@ export function LyricsEditor({
 
   const handleSaveNow = () => {
     if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
-    saveMut.mutate(lyrics);
+    saveMut.mutate({ newLyrics: lyrics, session: captureAuthSession() });
   };
 
   const handleAutoStructure = () => {
@@ -81,7 +85,7 @@ export function LyricsEditor({
       toast.error("Paste your lyrics first, then auto-structure");
       return;
     }
-    structureMut.mutate(lyrics);
+    structureMut.mutate({ lyricsText: lyrics, session: captureAuthSession() });
   };
 
   const canAutoStructure = hasSourceAudio && lyrics.trim().length > 0;

@@ -28,10 +28,11 @@ export function runAuthCookieWriter<T>(
   intent: AuthIntent,
   callerSignal: AbortSignal | undefined,
   alwaysRun: boolean,
+  isAdmissionCurrent: () => boolean,
   operation: (signal: AbortSignal) => Promise<T>,
 ): Promise<T> {
   const result = writerTail.then(async () => {
-    if (!alwaysRun && !isAuthIntentCurrent(intent)) {
+    if (!alwaysRun && (!isAuthIntentCurrent(intent) || !isAdmissionCurrent())) {
       throw new DOMException("Authentication intent was superseded", "AbortError");
     }
 

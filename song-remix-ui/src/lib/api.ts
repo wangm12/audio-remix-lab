@@ -1,4 +1,4 @@
-import { captureAuthSession, clearTokenIfCurrent, isAuthSessionCurrent, type AuthSessionLease } from "./auth";
+import { captureAuthSession, clearTokenIfCurrent, isAuthSessionCurrent, setToken, type AuthSessionLease } from "./auth";
 import { beginAuthIntent, currentAuthIntent, isAuthIntentCurrent, runAuthCookieWriter, type AuthIntent } from "./auth-cookie-writers";
 import type {
   User,
@@ -92,7 +92,9 @@ async function request<T>(
 ): Promise<T> {
   const perform = (signal?: AbortSignal) => requestResponse<T>(path, options, session, signal, writer);
   return writer
-    ? runAuthCookieWriter(writer.intent, options.signal ?? undefined, writer.alwaysRun === true, (signal) => perform(signal))
+    ? runAuthCookieWriter(writer.intent, options.signal ?? undefined, writer.alwaysRun === true,
+      () => writer.alwaysRun === true || writer.ignoreSession === true || isAuthSessionCurrent(session),
+      (signal) => perform(signal))
     : perform(options.signal ?? undefined);
 }
 
@@ -141,6 +143,13 @@ async function requestResponse<T>(
   }
   const body = await res.json();
   assertResponseCurrent(session, writer);
+  // Commit the new local identity while the cookie writer still owns the FIFO
+  // admission slot. Queued /me calls captured under the old session are then
+  // rejected before they can send an Authorization header with a stale lease.
+  if ((path === "/auth/login" || path === "/auth/register") && writer && isAuthIntentCurrent(writer.intent)) {
+    const token = (body as { access_token?: unknown } | null)?.access_token;
+    if (typeof token === "string" && token.length > 0) setToken(token);
+  }
   return body as T;
 }
 

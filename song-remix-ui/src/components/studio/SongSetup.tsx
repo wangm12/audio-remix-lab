@@ -1,6 +1,7 @@
-import { useState, useRef, type FormEvent } from "react";
+import { useState, useRef, useEffect, type FormEvent } from "react";
 import { Upload, Music2, X } from "lucide-react";
 import { api } from "@/lib/api";
+import { captureAuthSession, isAuthSessionCurrent } from "@/lib/auth";
 
 interface SongSetupProps {
   onSongCreated: (songId: string) => void;
@@ -14,9 +15,17 @@ export function SongSetup({ onSongCreated }: SongSetupProps) {
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState("");
   const fileRef = useRef<HTMLInputElement>(null);
+  const mounted = useRef(false);
+
+  useEffect(() => {
+    mounted.current = true;
+    return () => { mounted.current = false; };
+  }, []);
 
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
+    const submittingSession = captureAuthSession();
+    const stillSubmitting = () => mounted.current && isAuthSessionCurrent(submittingSession);
     setError("");
     setUploading(true);
 
@@ -27,19 +36,23 @@ export function SongSetup({ onSongCreated }: SongSetupProps) {
           title,
           artist: artist || undefined,
         });
+        if (!stillSubmitting()) return;
         songId = song.id;
         setCreatedSongId(song.id);
       }
 
       if (audioFile) {
+        if (!stillSubmitting()) return;
         await api.songs.uploadSource(songId, audioFile);
+        if (!stillSubmitting()) return;
       }
 
+      if (!stillSubmitting()) return;
       onSongCreated(songId);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to create song");
+      if (stillSubmitting()) setError(err instanceof Error ? err.message : "Failed to create song");
     } finally {
-      setUploading(false);
+      if (stillSubmitting()) setUploading(false);
     }
   };
 

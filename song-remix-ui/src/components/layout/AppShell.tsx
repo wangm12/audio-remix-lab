@@ -1,9 +1,9 @@
-import { useEffect, type ReactNode } from "react";
+import { useEffect, useRef, type ReactNode } from "react";
 import { Toaster } from "sonner";
 import { Nav } from "./Nav";
 import { NowPlaying } from "./NowPlaying";
 import { useTaskMonitor } from "./TaskMonitorContext";
-import { captureAuthSession, isAuthSessionCurrent } from "@/lib/auth";
+import { captureAuthSession, isAuthSessionCurrent, subscribeAuthIdentity, type AuthSessionLease } from "@/lib/auth";
 import { useAudioPlayer } from "@/hooks/useAudioPlayer";
 
 function MonitorRecoveryNotice() {
@@ -15,10 +15,19 @@ function MonitorRecoveryNotice() {
 }
 
 export function AppShell({ children }: { children: ReactNode }) {
+  const ownerRef = useRef<AuthSessionLease | null>(null);
   useEffect(() => {
-    const owner = captureAuthSession();
+    ownerRef.current = captureAuthSession();
+    const unsubscribe = subscribeAuthIdentity(() => {
+      // The stable shell follows an in-place identity replacement. The auth
+      // boundary synchronously releases media; this shell now owns B's teardown.
+      ownerRef.current = captureAuthSession();
+    });
     return () => {
-      if (isAuthSessionCurrent(owner)) useAudioPlayer.getState().stop();
+      unsubscribe();
+      const owner = ownerRef.current;
+      if (owner && isAuthSessionCurrent(owner)) useAudioPlayer.getState().stop();
+      ownerRef.current = null;
     };
   }, []);
 

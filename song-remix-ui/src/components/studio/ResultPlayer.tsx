@@ -11,33 +11,40 @@ interface ResultPlayerProps {
 
 export function ResultPlayer({ taskId, songTitle }: ResultPlayerProps) {
   const audioRef = useRef<HTMLAudioElement>(null);
-  const [playing, setPlaying] = useState(false);
-  const [progress, setProgress] = useState(0);
-  const [duration, setDuration] = useState(0);
+  const [playback, setPlayback] = useState({ url: "", playing: false, progress: 0, duration: 0 });
   const globalPlayer = useAudioPlayer();
   const ownerRef = useRef<AuthSessionLease | null>(null);
 
   const audioUrl = api.tasks.audioUrl(taskId);
+  if (playback.url !== audioUrl) {
+    setPlayback({ url: audioUrl, playing: false, progress: 0, duration: 0 });
+  }
+  const playing = playback.url === audioUrl && playback.playing;
+  const progress = playback.url === audioUrl ? playback.progress : 0;
+  const duration = playback.url === audioUrl ? playback.duration : 0;
 
   useEffect(() => {
     ownerRef.current = captureAuthSession();
     return subscribeAuthIdentity(() => {
-      setPlaying(false);
-      setProgress(0);
-      setDuration(0);
+      setPlayback((current) => ({ ...current, playing: false, progress: 0, duration: 0 }));
     });
+  }, []);
+
+  useEffect(() => {
+    const audio = audioRef.current;
+    if (!audio) return;
+    return registerAudioElement(audio);
   }, []);
 
   useEffect(() => {
     const audio = audioRef.current;
     const owner = ownerRef.current;
     if (!audio || !owner) return;
-    const unregisterMedia = registerAudioElement(audio);
-
-    const onTime = () => { if (isAuthSessionCurrent(owner)) setProgress(audio.currentTime); };
-    const onDur = () => { if (isAuthSessionCurrent(owner)) setDuration(audio.duration); };
-    const onEnd = () => { if (isAuthSessionCurrent(owner)) setPlaying(false); };
-    const onPause = () => { if (isAuthSessionCurrent(owner)) setPlaying(false); };
+    const isCurrentSource = () => isAuthSessionCurrent(owner) && audio.getAttribute("src") === audioUrl;
+    const onTime = () => { if (isCurrentSource()) setPlayback((current) => ({ ...current, progress: audio.currentTime })); };
+    const onDur = () => { if (isCurrentSource()) setPlayback((current) => ({ ...current, duration: audio.duration })); };
+    const onEnd = () => { if (isCurrentSource()) setPlayback((current) => ({ ...current, playing: false })); };
+    const onPause = () => { if (isCurrentSource()) setPlayback((current) => ({ ...current, playing: false })); };
 
     audio.addEventListener("timeupdate", onTime);
     audio.addEventListener("loadedmetadata", onDur);
@@ -48,7 +55,6 @@ export function ResultPlayer({ taskId, songTitle }: ResultPlayerProps) {
       audio.removeEventListener("loadedmetadata", onDur);
       audio.removeEventListener("ended", onEnd);
       audio.removeEventListener("pause", onPause);
-      unregisterMedia();
     };
   }, [audioUrl]);
 
@@ -60,10 +66,10 @@ export function ResultPlayer({ taskId, songTitle }: ResultPlayerProps) {
       audio.pause();
     } else {
       void Promise.resolve(audio.play()).catch(() => {
-        if (isAuthSessionCurrent(owner)) setPlaying(false);
+        if (isAuthSessionCurrent(owner) && audio.getAttribute("src") === audioUrl) setPlayback((current) => ({ ...current, playing: false }));
       });
     }
-    if (isAuthSessionCurrent(owner)) setPlaying(!playing);
+    if (isAuthSessionCurrent(owner)) setPlayback((current) => ({ ...current, playing: !playing }));
   };
 
   const playInGlobal = () => {

@@ -2,6 +2,7 @@ import { useState, useEffect } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { Sparkles, Loader2, CheckCircle2, XCircle, Music } from "lucide-react";
 import { api } from "@/lib/api";
+import { captureAuthSession, isAuthSessionCurrent } from "@/lib/auth";
 import { useTaskMonitor } from "@/components/layout/TaskMonitorContext";
 import type { Task, GenerateRequest } from "@/lib/types";
 import { ResultPlayer } from "./ResultPlayer";
@@ -100,7 +101,9 @@ export function GeneratePanel({ songId, request, disabled, initialTask }: Genera
       if (!songId || !request) throw new Error("Missing song or config");
       return api.tasks.generate(songId, request);
     },
-    onSuccess: (task) => {
+    onMutate: () => captureAuthSession(),
+    onSuccess: (task, _variables, session) => {
+      if (!session || !isAuthSessionCurrent(session)) return;
       setSubmittedTaskId(task.id);
       monitor.track(task);
     },

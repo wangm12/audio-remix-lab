@@ -5,6 +5,7 @@ import { api } from "@/lib/api";
 import { useTaskMonitor } from "@/components/layout/TaskMonitorContext";
 import type { Task } from "@/lib/types";
 import { ResultPlayer } from "../studio/ResultPlayer";
+import { captureAuthSession, isAuthSessionCurrent } from "@/lib/auth";
 
 interface TaskTimelineProps {
   tasks: Task[];
@@ -18,15 +19,16 @@ export function TaskTimeline({ tasks }: TaskTimelineProps) {
 
   const deleteMut = useMutation({
     mutationFn: api.tasks.delete,
-    onMutate: () => setDeleteError(null),
-    onSuccess: (_, id) => {
+    onMutate: () => { setDeleteError(null); return captureAuthSession(); },
+    onSuccess: (_, id, session) => {
+      if (!session || !isAuthSessionCurrent(session)) return;
       monitor.forgetTask(id);
       qc.invalidateQueries({ queryKey: ["songs"] });
       qc.invalidateQueries({ queryKey: ["song"] });
       qc.invalidateQueries({ queryKey: ["tasks"] });
       setConfirmDelete(null);
     },
-    onError: (error) => setDeleteError(error.message),
+    onError: (error, _id, session) => { if (session && isAuthSessionCurrent(session)) setDeleteError(error.message); },
   });
 
   if (tasks.length === 0) {

@@ -6,6 +6,7 @@ import { api } from "@/lib/api";
 import { SongCard } from "@/components/library/SongCard";
 import { EmptyState } from "@/components/shared/EmptyState";
 import { useTaskMonitor } from "@/components/layout/TaskMonitorContext";
+import { captureAuthSession, isAuthSessionCurrent } from "@/lib/auth";
 
 export function LibraryPage() {
   const qc = useQueryClient();
@@ -25,15 +26,16 @@ export function LibraryPage() {
   const [deleteError, setDeleteError] = useState<string | null>(null);
   const deleteMut = useMutation({
     mutationFn: api.songs.delete,
-    onMutate: () => setDeleteError(null),
-    onSuccess: (_, songId) => {
+    onMutate: () => { setDeleteError(null); return captureAuthSession(); },
+    onSuccess: (_, songId, session) => {
+      if (!session || !isAuthSessionCurrent(session)) return;
       monitor.forgetSong(songId);
       qc.invalidateQueries({ queryKey: ["songs"] });
       qc.invalidateQueries({ queryKey: ["song"] });
       qc.invalidateQueries({ queryKey: ["tasks"] });
       setConfirmDelete(null);
     },
-    onError: (error) => setDeleteError(error.message),
+    onError: (error, _songId, session) => { if (session && isAuthSessionCurrent(session)) setDeleteError(error.message); },
   });
 
   return (
