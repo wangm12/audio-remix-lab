@@ -42,6 +42,8 @@ def database_url(url: str, database: str) -> str:
 
 def recreate_database(url: str) -> None:
     name = make_url(url).database
+    if not name or not name.endswith("_test"):
+        raise RuntimeError(f"Refusing to drop database {name!r}: test database names must end with '_test'")
 
     async def _recreate() -> None:
         conn = await asyncpg.connect(asyncpg_dsn(url, database="postgres"))
