@@ -10,7 +10,7 @@ from app.database import async_session
 from app.models.task import GenerationTask
 from app.models.song import Song
 from app.services.engine_manager import engine_manager
-from app.utils.storage import resolve_key
+from app.utils.storage import InvalidStorageKey, resolve_key
 
 
 async def run_generation(task_id: uuid.UUID):
@@ -39,6 +39,20 @@ async def run_generation(task_id: uuid.UUID):
             await db.commit()
             return
 
+        source_path = ""
+        if song.source_audio_key:
+            try:
+                resolved = resolve_key(song.source_audio_key)
+                usable = resolved.is_file()
+            except InvalidStorageKey:
+                usable = False
+            if not usable:
+                task.status = "failed"
+                task.error_message = "Source audio is missing; upload it again"
+                await db.commit()
+                return
+            source_path = str(resolved)
+
         task.status = "processing"
         task.started_at = datetime.now(timezone.utc)
         await db.commit()
@@ -46,7 +60,7 @@ async def run_generation(task_id: uuid.UUID):
         try:
             params = task.engine_params or {}
             engine_task_id = await engine.submit_cover(
-                source_audio_path=str(resolve_key(song.source_audio_key)) if song.source_audio_key else "",
+                source_audio_path=source_path,
                 caption=task.style_prompt or "",
                 cover_strength=params.get("cover_strength", 0.5),
                 vocal_gender=task.vocal_gender,

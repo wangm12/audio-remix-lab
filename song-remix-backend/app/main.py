@@ -4,6 +4,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import settings
+from app.middleware.upload_limit import UploadLimitMiddleware
 from app.services.engine_manager import init_engines, engine_manager
 from app.api import auth, songs, tasks, presets, engines
 
@@ -17,6 +18,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Song Remix Studio", version="0.1.0", lifespan=lifespan)
 
+app.add_middleware(UploadLimitMiddleware)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origins_list,

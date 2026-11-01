@@ -99,7 +99,7 @@ export function SongSetup({ onSongCreated }: SongSetupProps) {
             className="w-full flex items-center justify-center gap-2 px-3 py-6 bg-surface-1 border border-dashed border-surface-3 rounded-lg text-sm text-text-secondary hover:border-brand hover:text-brand transition-colors"
           >
             <Upload className="w-4 h-4" />
-            Upload audio file (MP3, WAV, FLAC)
+            Upload audio file (MP3, WAV, FLAC, OGG, M4A)
           </button>
         )}
         <input

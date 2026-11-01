@@ -2,6 +2,7 @@ import tempfile
 from pathlib import Path
 from uuid import UUID
 
+from starlette.concurrency import run_in_threadpool
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -107,7 +108,8 @@ async def delete_song(
     prefix = song_prefix(user.id, song.id)
     await db.delete(song)
     await db.commit()
-    delete_key(source_key)
+    if source_key and source_key.startswith(f"{prefix}/"):
+        delete_key(source_key)
     delete_prefix(prefix)
     for path in legacy_outputs:
         delete_legacy_file(path)
@@ -146,13 +148,13 @@ async def upload_source(
                 detail=f"Audio is longer than {settings.MAX_SOURCE_DURATION_SECONDS:.0f} seconds",
             )
         new_key = song_source_key(user.id, song.id, probe.extension)
-        store_file(new_key, incoming)
+        await run_in_threadpool(store_file, new_key, incoming)
 
     old_key = song.source_audio_key
     song.source_audio_key = new_key
     await db.commit()
     await db.refresh(song)
-    if old_key and old_key != new_key:
+    if old_key and old_key != new_key and old_key.startswith(f"{song_prefix(user.id, song.id)}/"):
         delete_key(old_key)
     return song
 
