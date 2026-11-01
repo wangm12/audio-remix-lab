@@ -14,7 +14,14 @@ env_value = $(shell [ -f "$(ENV_FILE)" ] && sed -n 's/^$(1)=//p' "$(ENV_FILE)" |
 
 HOST ?= $(or $(call env_value,HOST),127.0.0.1)
 
-.PHONY: help env install install-backend install-frontend postgres db-wait migrate seed backend frontend dev serve up down logs build lint test test-backend test-frontend status
+ACESTEP_DIR := acestep
+ACESTEP_PORT ?= 8001
+ACESTEP_CHECKPOINTS_DIR ?= $(HOME)/.cache/audio-remix-lab/acestep-checkpoints
+ACESTEP_MODEL ?= $(or $(call env_value,ACESTEP_MODEL),acestep-v15-turbo)
+ACESTEP_LM_MODEL ?= $(or $(call env_value,ACESTEP_LM_MODEL),acestep-5Hz-lm-1.7B)
+export ACESTEP_CHECKPOINTS_DIR
+
+.PHONY: help env install install-backend install-frontend postgres db-wait migrate seed backend frontend dev serve up down logs build lint test test-backend test-frontend acestep acestep-download status
 
 help: ## Show available commands.
 	@awk 'BEGIN {FS = ":.*##"; printf "\nUsage:\n  make <target>\n\nTargets:\n"} /^[a-zA-Z0-9_-]+:.*##/ {printf "  %-18s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -114,6 +121,18 @@ test-frontend: install-frontend ## Run frontend tests, lint, and build.
 	cd $(FRONTEND_DIR) && npm test && npm run lint && npm run build
 
 test: test-backend test-frontend ## Run every backend and frontend check.
+
+acestep: env ## Start the ACE-Step API on 127.0.0.1:8001 (first run downloads models).
+	@if [ ! -f "$(ACESTEP_DIR)/pyproject.toml" ]; then git submodule update --init "$(ACESTEP_DIR)"; fi
+	@command -v uv >/dev/null || { echo "uv is required: brew install uv"; exit 1; }
+	@effective_cache=$$(python3.12 scripts/prepare_acestep_checkpoints.py "$(ACESTEP_DIR)" "$(ACESTEP_CHECKPOINTS_DIR)") || exit $$?; \
+	cd "$(ACESTEP_DIR)" && ACESTEP_CHECKPOINTS_DIR="$$effective_cache" ACESTEP_CONFIG_PATH="$(ACESTEP_MODEL)" ACESTEP_LM_MODEL_PATH="$(ACESTEP_LM_MODEL)" ACESTEP_LM_BACKEND=mlx ACESTEP_INIT_LLM=true ACESTEP_NO_INIT=false TOKENIZERS_PARALLELISM=false uv run acestep-api --host 127.0.0.1 --port "$(ACESTEP_PORT)"
+
+acestep-download: ## Download all registered ACE-Step models without starting the server.
+	@if [ ! -f "$(ACESTEP_DIR)/pyproject.toml" ]; then git submodule update --init "$(ACESTEP_DIR)"; fi
+	@command -v uv >/dev/null || { echo "uv is required: brew install uv"; exit 1; }
+	@effective_cache=$$(python3.12 scripts/prepare_acestep_checkpoints.py "$(ACESTEP_DIR)" "$(ACESTEP_CHECKPOINTS_DIR)") || exit $$?; \
+	cd "$(ACESTEP_DIR)" && ACESTEP_CHECKPOINTS_DIR="$$effective_cache" uv run acestep-download --all
 
 status: ## Show git and Docker Compose status.
 	git status --short --branch

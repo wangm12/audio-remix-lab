@@ -6752,6 +6752,11 @@ git commit -m "feat: make serve builds the UI and serves it from FastAPI; bind 1
 
 ### Task 15: Pin ACE-Step v0.1.8 and add `make acestep`
 
+#### Controller additions
+
+- All model weights use the shared cache `$(HOME)/.cache/audio-remix-lab/acestep-checkpoints`, exported as `ACESTEP_CHECKPOINTS_DIR`; Make command-line overrides must work, including paths containing spaces. The `acestep/checkpoints` path is only a guarded compatibility symlink because this exact upstream API pin hardcodes it for startup/LM loading. Normalize the effective cache to the same absolute expanded path for both alias and child process. Accept an identical existing symlink; refuse any different symlink or existing non-symlink entry without modifying it, and reject self/nested cycles.
+- Both Make targets use the shared cache. `acestep-download` invokes `uv run acestep-download --all` (official registered models including XL). Update Task 16 documentation and Git hygiene language consistently: model data resides in the shared cache; the submodule path is a local compatibility alias.
+
 **Files:**
 - Modify:
   - `acestep` (gitlink `82252c2` → `dce6214`, tag `v0.1.8`), `.gitmodules`
@@ -6771,7 +6776,7 @@ git commit -m "feat: make serve builds the UI and serves it from FastAPI; bind 1
       - Initializes the submodule if needed and requires `uv`.
       - Runs `uv run acestep-api --host 127.0.0.1 --port $(ACESTEP_PORT)` with `ACESTEP_CONFIG_PATH`, `ACESTEP_LM_MODEL_PATH`, `ACESTEP_LM_BACKEND=mlx`, `ACESTEP_INIT_LLM=true`, `ACESTEP_NO_INIT=false` and `TOKENIZERS_PARALLELISM=false`.
       - It never uses `$(HOST)`, and never sources `.env` (so app secrets stay out of the ACE-Step process).
-    - `make acestep-download` runs `uv run acestep-download`.
+    - Both targets export `ACESTEP_CHECKPOINTS_DIR`; `make acestep-download` runs `uv run acestep-download --all`.
   - Settings, used from P1b on: `ACESTEP_API_BASE = "http://127.0.0.1:8001"` and `ACESTEP_LM_MODEL: str = "acestep-5Hz-lm-1.7B"`.
 
 - [ ] **Step 1: Write the failing tests**
@@ -6887,6 +6892,8 @@ HOST ?= $(or $(call env_value,HOST),127.0.0.1)
 
 ACESTEP_DIR := acestep
 ACESTEP_PORT ?= 8001
+ACESTEP_CHECKPOINTS_DIR ?= $(HOME)/.cache/audio-remix-lab/acestep-checkpoints
+export ACESTEP_CHECKPOINTS_DIR
 ACESTEP_MODEL ?= $(or $(call env_value,ACESTEP_MODEL),acestep-v15-turbo)
 ACESTEP_LM_MODEL ?= $(or $(call env_value,ACESTEP_LM_MODEL),acestep-5Hz-lm-1.7B)
 
@@ -6906,13 +6913,14 @@ with:
 test: test-backend test-frontend ## Run every backend and frontend check.
 
 acestep: env ## Start the ACE-Step API on 127.0.0.1:8001 (first run downloads models).
-	@if [ ! -f $(ACESTEP_DIR)/pyproject.toml ]; then git submodule update --init $(ACESTEP_DIR); fi
+	@if [ ! -f "$(ACESTEP_DIR)/pyproject.toml" ]; then git submodule update --init "$(ACESTEP_DIR)"; fi
 	@command -v uv >/dev/null || { echo "uv is required: brew install uv"; exit 1; }
-	cd $(ACESTEP_DIR) && ACESTEP_CONFIG_PATH="$(ACESTEP_MODEL)" ACESTEP_LM_MODEL_PATH="$(ACESTEP_LM_MODEL)" ACESTEP_LM_BACKEND=mlx ACESTEP_INIT_LLM=true ACESTEP_NO_INIT=false TOKENIZERS_PARALLELISM=false uv run acestep-api --host 127.0.0.1 --port $(ACESTEP_PORT)
+	@effective_cache=$$(python3.12 scripts/prepare_acestep_checkpoints.py "$(ACESTEP_DIR)" "$(ACESTEP_CHECKPOINTS_DIR)") || exit $$?; cd "$(ACESTEP_DIR)" && ACESTEP_CHECKPOINTS_DIR="$$effective_cache" ACESTEP_CONFIG_PATH="$(ACESTEP_MODEL)" ACESTEP_LM_MODEL_PATH="$(ACESTEP_LM_MODEL)" ACESTEP_LM_BACKEND=mlx ACESTEP_INIT_LLM=true ACESTEP_NO_INIT=false TOKENIZERS_PARALLELISM=false uv run acestep-api --host 127.0.0.1 --port "$(ACESTEP_PORT)"
 
-acestep-download: ## Download the default ACE-Step models without starting the server.
-	@if [ ! -f $(ACESTEP_DIR)/pyproject.toml ]; then git submodule update --init $(ACESTEP_DIR); fi
-	cd $(ACESTEP_DIR) && uv run acestep-download
+acestep-download: ## Download all registered ACE-Step models without starting the server.
+	@if [ ! -f "$(ACESTEP_DIR)/pyproject.toml" ]; then git submodule update --init "$(ACESTEP_DIR)"; fi
+	@command -v uv >/dev/null || { echo "uv is required: brew install uv"; exit 1; }
+	@effective_cache=$$(python3.12 scripts/prepare_acestep_checkpoints.py "$(ACESTEP_DIR)" "$(ACESTEP_CHECKPOINTS_DIR)") || exit $$?; cd "$(ACESTEP_DIR)" && ACESTEP_CHECKPOINTS_DIR="$$effective_cache" uv run acestep-download --all
 
 ```
 
@@ -6966,7 +6974,7 @@ Run: `make -n acestep ENV_FILE=/nonexistent/.env | tail -n 1`
 Expected:
 
 ```text
-cd acestep && ACESTEP_CONFIG_PATH="acestep-v15-turbo" ACESTEP_LM_MODEL_PATH="acestep-5Hz-lm-1.7B" ACESTEP_LM_BACKEND=mlx ACESTEP_INIT_LLM=true ACESTEP_NO_INIT=false TOKENIZERS_PARALLELISM=false uv run acestep-api --host 127.0.0.1 --port 8001
+effective_cache=$(python3.12 scripts/prepare_acestep_checkpoints.py "acestep" "/Users/<user>/.cache/audio-remix-lab/acestep-checkpoints") || exit $?; cd "acestep" && ACESTEP_CHECKPOINTS_DIR="$effective_cache" ACESTEP_CONFIG_PATH="acestep-v15-turbo" ACESTEP_LM_MODEL_PATH="acestep-5Hz-lm-1.7B" ACESTEP_LM_BACKEND=mlx ACESTEP_INIT_LLM=true ACESTEP_NO_INIT=false TOKENIZERS_PARALLELISM=false uv run acestep-api --host 127.0.0.1 --port "8001"
 ```
 
 Run: `git status --short`
@@ -6974,7 +6982,7 @@ Expected: only the files in this task, and no `?? acestep/...` entries.
 
 - [ ] **Step 7: (Optional, manual) Boot ACE-Step once**
 
-P1a measures this properly. Run it here only to smoke-test the target. The first run downloads several GB of checkpoints into `acestep/checkpoints/`.
+P1a measures this properly. Run it here only to smoke-test the target. The first run downloads models into `$HOME/.cache/audio-remix-lab/acestep-checkpoints`; `acestep/checkpoints` is a guarded symlink to that shared cache.
 
 ```bash
 make acestep
@@ -7135,7 +7143,7 @@ make acestep
 curl -s http://127.0.0.1:8001/health
 ```
 
-The first start downloads several GB of models into `acestep/checkpoints/`. To download them ahead of time, run `make acestep-download`.
+The first start downloads models into `$HOME/.cache/audio-remix-lab/acestep-checkpoints`. The local `acestep/checkpoints` path is a guarded compatibility symlink. To download all registered models, including XL, ahead of time, run `make acestep-download`.
 
 To use other models, set `ACESTEP_MODEL` and `ACESTEP_LM_MODEL` in `.env`, or pass them on the command line, for example `make acestep ACESTEP_MODEL=acestep-v15-xl-turbo`. ACE-Step always listens on 127.0.0.1, whatever `HOST` is set to.
 
@@ -7252,7 +7260,7 @@ Every route except register, login, logout and health needs `Authorization: Bear
 
 ## Git hygiene
 
-Git ignores `.env`, `data/`, `pgdata/`, `node_modules/`, `.venv/` and the tool caches. ACE-Step keeps its checkpoints and virtual environment inside the submodule, which is configured with `ignore = untracked`, so downloads never show up in `git status`.
+Git ignores `.env`, `data/`, `pgdata/`, `node_modules/`, `.venv/` and the tool caches. ACE-Step weights live in the shared `$HOME/.cache/audio-remix-lab/acestep-checkpoints` directory; `acestep/checkpoints` is only a guarded compatibility symlink. The submodule's `ignore = untracked` setting keeps its local virtual environment and alias from showing as changes.
 ````
 
 - [ ] **Step 4: Rewrite the Chinese README**
@@ -7324,7 +7332,7 @@ make acestep
 curl -s http://127.0.0.1:8001/health
 ```
 
-第一次启动会把几 GB 的模型下载到 `acestep/checkpoints/`。想提前下载的话，可以运行 `make acestep-download`。
+第一次启动会把模型下载到 `$HOME/.cache/audio-remix-lab/acestep-checkpoints`；本地 `acestep/checkpoints` 路径是经过保护的兼容符号链接。想提前下载包括 XL 在内的全部已注册模型，可以运行 `make acestep-download`。
 
 要换用其他模型，可以在 `.env` 里设置 `ACESTEP_MODEL` 和 `ACESTEP_LM_MODEL`，也可以在命令行里传入，例如 `make acestep ACESTEP_MODEL=acestep-v15-xl-turbo`。无论 `HOST` 设成什么，ACE-Step 都只监听 127.0.0.1。
 
@@ -7441,7 +7449,7 @@ uv pip compile requirements.txt requirements-dev.txt --python-version 3.12 --out
 
 ## Git 规范
 
-`.env`、`data/`、`pgdata/`、`node_modules/`、`.venv/` 和各类工具缓存都已被 git 忽略。ACE-Step 的模型文件和虚拟环境保存在子模块内部；子模块配置了 `ignore = untracked`，所以下载的文件不会出现在 `git status` 里。
+`.env`、`data/`、`pgdata/`、`node_modules/`、`.venv/` 和各类工具缓存都已被 git 忽略。ACE-Step 模型保存在共享目录 `$HOME/.cache/audio-remix-lab/acestep-checkpoints`；`acestep/checkpoints` 只是受保护的兼容符号链接。子模块的 `ignore = untracked` 配置会隐藏本地虚拟环境和这个链接。
 ````
 
 - [ ] **Step 5: Run the gate**

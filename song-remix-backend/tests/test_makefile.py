@@ -1,7 +1,5 @@
 import os
 import subprocess
-import tempfile
-from pathlib import Path
 
 from tests.helpers import BACKEND_DIR, TEST_DATABASE_URL, assert_application_database_is_test, make_dry_run
 from app.database import engine
@@ -55,25 +53,14 @@ def test_migrate_uses_the_backend_virtualenv_alembic():
 
 def test_direct_alembic_cli_current_imports_against_the_scratch_database():
     assert_application_database_is_test(engine.url, TEST_DATABASE_URL)
-    with tempfile.TemporaryDirectory(prefix="task14-alembic-bootstrap-") as bootstrap:
-        Path(bootstrap, "sitecustomize.py").write_text(
-            "import tests._env\n"
-            "from app.database import engine\n"
-            "from tests._isolation import assert_application_database_is_test\n"
-            "assert_application_database_is_test(engine.url, tests._env.TEST_DATABASE_URL)\n"
-        )
-        env = {
-            **os.environ,
-            "DATABASE_URL": TEST_DATABASE_URL,
-            "TEST_DATABASE_URL": TEST_DATABASE_URL,
-            "PYTHONPATH": os.pathsep.join((bootstrap, str(BACKEND_DIR))),
-        }
-        result = subprocess.run(
-            [str(BACKEND_DIR / ".venv/bin/alembic"), "current"],
-            cwd=BACKEND_DIR,
-            env=env,
-            capture_output=True,
-            text=True,
-        )
+    env = {**os.environ, "DATABASE_URL": TEST_DATABASE_URL, "TEST_DATABASE_URL": TEST_DATABASE_URL}
+    clean_env = {key: value for key, value in env.items() if key != "PYTHONPATH"}
+    result = subprocess.run(
+        [str(BACKEND_DIR / ".venv/bin/alembic"), "current"],
+        cwd=BACKEND_DIR,
+        env=clean_env,
+        capture_output=True,
+        text=True,
+    )
     assert result.returncode == 0, result.stdout + result.stderr
     assert "7c3e2a9d4f10" in result.stdout + result.stderr

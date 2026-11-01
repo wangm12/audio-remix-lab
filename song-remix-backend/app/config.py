@@ -24,8 +24,9 @@ class Settings(BaseSettings):
     FRONTEND_DIST: str = ""
 
     ACESTEP_ENABLED: bool = True
-    ACESTEP_API_BASE: str = "http://localhost:8001"
+    ACESTEP_API_BASE: str = "http://127.0.0.1:8001"
     ACESTEP_MODEL: str = "acestep-v15-turbo"
+    ACESTEP_LM_MODEL: str = "acestep-5Hz-lm-1.7B"
 
     @property
     def cors_origins_list(self) -> list[str]:
