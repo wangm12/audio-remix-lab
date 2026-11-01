@@ -4,22 +4,32 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import FileResponse
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sse_starlette.sse import EventSourceResponse
 
-from app.database import get_db
 from app.core.deps import get_current_user, get_optional_user
 from app.core.sse import task_event_generator
-from app.models.user import User
+from app.database import get_db
+from app.models.preset import StylePreset
 from app.models.song import Song
 from app.models.task import GenerationTask
-from app.models.preset import StylePreset
+from app.models.user import User
 from app.schemas.task import GenerateRequest, TaskResponse
 from app.services.engine_manager import engine_manager
 from app.services.task_service import run_generation
 
 router = APIRouter(prefix="/api", tags=["tasks"])
+
+
+async def _get_owned_task(db: AsyncSession, task_id: UUID, user: User) -> GenerationTask:
+    result = await db.execute(
+        select(GenerationTask).where(GenerationTask.id == task_id, GenerationTask.user_id == user.id)
+    )
+    task = result.scalar_one_or_none()
+    if task is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Task not found")
+    return task
 
 
 @router.post("/songs/{song_id}/generate", response_model=TaskResponse, status_code=status.HTTP_201_CREATED)
@@ -34,6 +44,18 @@ async def generate(
     if song is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Song not found")
 
+    preset = None
+    if req.style_preset_id:
+        preset_result = await db.execute(
+            select(StylePreset).where(
+                StylePreset.id == req.style_preset_id,
+                or_(StylePreset.is_builtin.is_(True), StylePreset.user_id == user.id),
+            )
+        )
+        preset = preset_result.scalar_one_or_none()
+        if preset is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Preset not found")
+
     if req.engine not in engine_manager.available_engines():
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Engine '{req.engine}' is not available")
 
@@ -42,12 +64,7 @@ async def generate(
         await db.commit()
         await db.refresh(song)
 
-    style_prompt = req.style_prompt
-    if req.style_preset_id:
-        preset_result = await db.execute(select(StylePreset).where(StylePreset.id == req.style_preset_id))
-        preset = preset_result.scalar_one_or_none()
-        if preset:
-            style_prompt = style_prompt or preset.acestep_caption
+    style_prompt = req.style_prompt or (preset.acestep_caption if preset else None)
 
     task = GenerationTask(
         song_id=song.id,
@@ -91,13 +108,7 @@ async def get_task(
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    result = await db.execute(
-        select(GenerationTask).where(GenerationTask.id == task_id, GenerationTask.user_id == user.id)
-    )
-    task = result.scalar_one_or_none()
-    if task is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Task not found")
-    return task
+    return await _get_owned_task(db, task_id, user)
 
 
 @router.delete("/tasks/{task_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -106,12 +117,7 @@ async def delete_task(
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    result = await db.execute(
-        select(GenerationTask).where(GenerationTask.id == task_id, GenerationTask.user_id == user.id)
-    )
-    task = result.scalar_one_or_none()
-    if task is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Task not found")
+    task = await _get_owned_task(db, task_id, user)
     if task.output_audio_path and os.path.exists(task.output_audio_path):
         os.remove(task.output_audio_path)
     await db.delete(task)
@@ -128,6 +134,7 @@ async def get_task_audio(
     # Support auth via query param for <audio> and <a> elements
     if user is None and token:
         from app.core.security import decode_access_token
+
         user_id = decode_access_token(token)
         if user_id:
             result = await db.execute(select(User).where(User.id == UUID(user_id)))
@@ -136,12 +143,7 @@ async def get_task_audio(
     if user is None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
 
-    result = await db.execute(
-        select(GenerationTask).where(GenerationTask.id == task_id, GenerationTask.user_id == user.id)
-    )
-    task = result.scalar_one_or_none()
-    if task is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Task not found")
+    task = await _get_owned_task(db, task_id, user)
     if not task.output_audio_path or not os.path.exists(task.output_audio_path):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Audio not available")
     return FileResponse(task.output_audio_path, media_type="audio/mpeg", filename=f"{task.id}.mp3")

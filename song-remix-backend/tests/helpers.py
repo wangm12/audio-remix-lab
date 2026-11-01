@@ -9,8 +9,10 @@ import sys
 from collections.abc import Callable, Coroutine
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Any, TypeVar
+from uuid import UUID
 
 import asyncpg
 import httpx
@@ -137,6 +139,32 @@ async def create_song(client: httpx.AsyncClient, user: AuthedUser, title: str = 
     response = await client.post("/api/songs", json={"title": title}, headers=user.headers)
     assert response.status_code == 201, response.text
     return response.json()
+
+
+async def insert_task(
+    user_id: str,
+    song_id: str,
+    *,
+    status: str = "completed",
+    output_audio_path: str | None = None,
+    created_at: datetime | None = None,
+) -> str:
+    from app.database import async_session
+    from app.models.task import GenerationTask
+
+    async with async_session() as session:
+        task = GenerationTask(
+            song_id=UUID(song_id),
+            user_id=UUID(user_id),
+            engine="acestep",
+            status=status,
+            output_audio_path=output_audio_path,
+        )
+        if created_at is not None:
+            task.created_at = created_at
+        session.add(task)
+        await session.commit()
+        return str(task.id)
 
 
 def make_environment(**overrides: str) -> dict[str, str]:
