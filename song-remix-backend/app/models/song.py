@@ -20,8 +20,22 @@ class Song(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     creator: Mapped["User | None"] = relationship("User", back_populates="songs")  # noqa: F821
-    tasks: Mapped[list["GenerationTask"]] = relationship("GenerationTask", back_populates="song", lazy="selectin", cascade="all, delete-orphan")  # noqa: F821
+    tasks: Mapped[list["GenerationTask"]] = relationship(  # noqa: F821
+        "GenerationTask",
+        back_populates="song",
+        lazy="selectin",
+        cascade="all, delete-orphan",
+        order_by="GenerationTask.created_at.desc()",
+    )
 
     @property
     def has_source(self) -> bool:
         return bool(self.source_audio_key)
+
+    @property
+    def task_count(self) -> int:
+        return len(self.tasks)
+
+    @property
+    def latest_status(self) -> str | None:
+        return self.tasks[0].status if self.tasks else None

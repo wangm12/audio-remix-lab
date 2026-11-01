@@ -16,6 +16,7 @@ from app.models.user import User
 from app.schemas.song import (
     SongCreate,
     SongDetailResponse,
+    SongListItem,
     SongResponse,
     SongUpdate,
     StructureLyricsRequest,
@@ -61,13 +62,16 @@ async def create_song(
     return song
 
 
-@router.get("", response_model=list[SongResponse])
+@router.get("", response_model=list[SongListItem])
 async def list_songs(
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
     result = await db.execute(
-        select(Song).where(Song.created_by == user.id).order_by(Song.created_at.desc())
+        select(Song)
+        .options(selectinload(Song.tasks))
+        .where(Song.created_by == user.id)
+        .order_by(Song.created_at.desc())
     )
     return result.scalars().all()
 

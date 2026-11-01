@@ -18,5 +18,5 @@ class User(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
-    songs: Mapped[list["Song"]] = relationship("Song", back_populates="creator", lazy="selectin")  # noqa: F821
-    tasks: Mapped[list["GenerationTask"]] = relationship("GenerationTask", back_populates="user", lazy="selectin")  # noqa: F821
+    songs: Mapped[list["Song"]] = relationship("Song", back_populates="creator", lazy="raise")  # noqa: F821
+    tasks: Mapped[list["GenerationTask"]] = relationship("GenerationTask", back_populates="user", lazy="raise")  # noqa: F821

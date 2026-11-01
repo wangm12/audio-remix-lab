@@ -14,7 +14,11 @@ const statusIcon = {
 };
 
 export function SongCard({ song }: SongCardProps) {
-  const latestTask = song.tasks?.[0];
+  const latestStatus =
+    song.latest_status !== undefined
+      ? song.latest_status
+      : song.tasks?.[0]?.status ?? null;
+  const taskCount = song.task_count ?? song.tasks?.length ?? 0;
 
   return (
     <Link
@@ -32,16 +36,16 @@ export function SongCard({ song }: SongCardProps) {
             <p className="text-xs text-text-secondary truncate">{song.artist}</p>
           )}
           <div className="flex items-center gap-2 mt-2">
-            {latestTask && (
+            {latestStatus && (
               <div className="flex items-center gap-1">
-                {statusIcon[latestTask.status]}
+                {statusIcon[latestStatus]}
                 <span className="text-xs text-text-muted capitalize">
-                  {latestTask.status}
+                  {latestStatus}
                 </span>
               </div>
             )}
             <span className="text-xs text-text-muted">
-              {song.tasks?.length ?? 0} generation{(song.tasks?.length ?? 0) !== 1 ? "s" : ""}
+              {taskCount} generation{taskCount !== 1 ? "s" : ""}
             </span>
           </div>
         </div>

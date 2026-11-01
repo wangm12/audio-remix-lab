@@ -29,6 +29,11 @@ class SongResponse(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class SongListItem(SongResponse):
+    task_count: int
+    latest_status: str | None
+
+
 class SongDetailResponse(SongResponse):
     tasks: list["TaskResponse"] = []
 

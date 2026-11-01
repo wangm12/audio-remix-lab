@@ -12,6 +12,8 @@ export interface Song {
   lyrics: string | null;
   has_source: boolean;
   created_at: string;
+  task_count?: number;
+  latest_status?: Task["status"] | null;
   tasks?: Task[];
 }
 
