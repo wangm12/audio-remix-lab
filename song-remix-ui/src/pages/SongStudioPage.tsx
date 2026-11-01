@@ -14,9 +14,10 @@ import { useTaskMonitor } from "@/components/layout/TaskMonitorContext";
 
 export function SongStudioPage() {
   const { songId } = useParams({ from: "/studio/$songId" });
+  const monitor = useTaskMonitor();
   const { data: song, isLoading } = useQuery({
     queryKey: ["song", songId],
-    queryFn: () => api.songs.get(songId),
+    queryFn: async () => monitor.visibleSong(await api.songs.get(songId)),
   });
 
   if (isLoading) {

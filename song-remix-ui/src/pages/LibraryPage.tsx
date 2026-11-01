@@ -12,7 +12,7 @@ export function LibraryPage() {
   const monitor = useTaskMonitor();
   const { data: songs, isLoading } = useQuery({
     queryKey: ["songs"],
-    queryFn: api.songs.list,
+    queryFn: async () => monitor.visibleSongs(await api.songs.list()),
   });
 
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);

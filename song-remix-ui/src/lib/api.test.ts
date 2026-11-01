@@ -44,6 +44,33 @@ describe("api request helper", () => {
     ]);
   });
 
+  it.each(["constructor", "toString", "__proto__"])("rejects prototype field name %s from validation details", async (field) => {
+    server.use(http.post("/api/auth/register", () => HttpResponse.json({ detail: [
+      { loc: ["body", field], msg: "invalid", input: "secret-SENTINEL" },
+    ] }, { status: 422 })));
+    let error: (Error & { issues: unknown[] }) | undefined;
+    try {
+      await api.auth.register({ email: "a@example.com", username: "a", password: "secret-SENTINEL" });
+    } catch (caught) { error = caught as Error & { issues: unknown[] }; }
+    expect(error?.message).toBe("Some information needs to be corrected.");
+    expect(error?.issues).toEqual([]);
+    expect(error?.message).not.toContain("SENTINEL");
+  });
+
+  it("uses the generic validation fallback for malformed location members", async () => {
+    server.use(http.post("/api/auth/register", () => HttpResponse.json({ detail: [
+      { loc: ["body", { nested: "username" }], msg: "invalid", input: "secret-SENTINEL" },
+    ] }, { status: 422 })));
+    let error: (Error & { issues: unknown[] }) | undefined;
+    try {
+      await api.auth.register({ email: "a@example.com", username: "a", password: "secret-SENTINEL" });
+    } catch (caught) { error = caught as Error & { issues: unknown[] }; }
+    expect(error?.message).toBe("Some information needs to be corrected.");
+    expect(error?.issues).toEqual([]);
+    expect(JSON.stringify(error)).not.toContain("username");
+    expect(JSON.stringify(error)).not.toContain("SENTINEL");
+  });
+
   it.each([
     [{ detail: { nested: "value" } }, "Some information"],
     [{ detail: ["bad"] }, "Some information"],

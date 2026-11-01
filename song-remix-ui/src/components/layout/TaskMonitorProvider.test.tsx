@@ -1,14 +1,16 @@
 import { act, render, screen, waitFor } from "@testing-library/react";
+import { useEffect } from "react";
 import { StrictMode } from "react";
 import { QueryClient, QueryClientProvider, useQuery, useQueryClient } from "@tanstack/react-query";
 import { http, HttpResponse } from "msw";
 import { toast } from "sonner";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { api } from "@/lib/api";
-import type { Task } from "@/lib/types";
+import { api, authRedirect } from "@/lib/api";
+import { getToken, setToken } from "@/lib/auth";
+import type { Song, Task } from "@/lib/types";
 import { server } from "@/test/server";
 import { TaskMonitorProvider } from "./TaskMonitorProvider";
-import { useTaskMonitor } from "./TaskMonitorContext";
+import { useTaskMonitor, type TaskMonitorValue } from "./TaskMonitorContext";
 
 function task(id: string, songId: string, status: Task["status"]): Task {
   return { id, song_id: songId, engine: "acestep", status, style_prompt: "warm", vocal_gender: "auto",
@@ -30,8 +32,10 @@ class FakeEventSource {
   progress(value: unknown) { this.emit("progress", { data: JSON.stringify(value) }); }
 }
 
+let currentMonitor: TaskMonitorValue;
 function Consumer() {
   const monitor = useTaskMonitor();
+  useEffect(() => { currentMonitor = monitor; }, [monitor]);
   const client = useQueryClient();
   const { data: taskA } = useQuery({ queryKey: ["task", "active-a"], queryFn: () => api.tasks.get("active-a"), enabled: false });
   return <>
@@ -41,6 +45,15 @@ function Consumer() {
     <div data-testid="listed">{client.getQueryData<Task[]>(["tasks"])?.some((item) => item.id === "accepted") ? "listed" : "not listed"}</div>
     {monitor.recoveryIds.includes("active-a") && <p role="status">Live updates interrupted. Checking task status…</p>}
   </>;
+}
+
+function LateSongQuery({ songId }: { songId: string }) {
+  const monitor = useTaskMonitor();
+  const { data } = useQuery<Song | null>({
+    queryKey: ["song", songId],
+    queryFn: async () => monitor.visibleSong(await api.songs.get(songId)),
+  });
+  return <p data-testid="song-result">{data?.tasks?.map((item) => item.id).join(",") || "empty"}</p>;
 }
 
 function renderMonitor() {
@@ -215,6 +228,101 @@ describe("app-shell task monitor", () => {
     await waitFor(() => expect(screen.getByTestId("active")).toHaveTextContent("accepted:pending"));
     expect(screen.getByTestId("listed")).toHaveTextContent("listed");
     expect(FakeEventSource.instances.filter((source) => !source.closed)).toHaveLength(1);
+    view.unmount();
+  });
+
+  it("advances a known task from a later discovery through terminal cleanup", async () => {
+    let current = task("discovery-a", "song-a", "processing");
+    server.use(http.get("/api/tasks", () => HttpResponse.json([current])));
+    vi.stubGlobal("EventSource", FakeEventSource as unknown as typeof EventSource);
+    const view = renderMonitor();
+    await waitFor(() => expect(screen.getByTestId("active")).toHaveTextContent("discovery-a:processing"));
+    current = { ...current, status: "completed", has_output: true };
+    await act(async () => { await view.client.invalidateQueries({ queryKey: ["tasks"], exact: true }); });
+    expect(view.client.getQueryData<Task>(["task", "discovery-a"])?.status).toBe("completed");
+    expect(screen.getByTestId("active")).not.toHaveTextContent("discovery-a");
+    expect(FakeEventSource.instances.every((source) => source.closed)).toBe(true);
+    view.unmount();
+  });
+
+  it("keeps task and Song tombstones authoritative over late detail records", async () => {
+    server.use(http.get("/api/tasks", () => HttpResponse.json([])));
+    const view = renderMonitor();
+    const stale = task("forgotten", "deleted-song", "processing");
+    view.client.setQueryData(["task", stale.id], stale);
+    view.client.setQueryData(["song", stale.song_id], { id: stale.song_id, tasks: [stale] });
+    await act(async () => { currentMonitor.forgetTask(stale.id); });
+    act(() => currentMonitor.track(stale));
+    expect(view.client.getQueryData(["task", stale.id])).toBeUndefined();
+    expect(view.client.getQueryData<{ id: string; tasks: Task[] }>(["song", stale.song_id])?.tasks).toEqual([]);
+
+    const lateSong = { id: "deleted-song", tasks: [task("late-task", "deleted-song", "processing")] } as never;
+    act(() => currentMonitor.forgetSong("deleted-song"));
+    expect(currentMonitor.visibleSong(lateSong)).toBeNull();
+    act(() => currentMonitor.track(task("late-task", "deleted-song", "processing")));
+    expect(currentMonitor.activeTasks).toEqual([]);
+    view.unmount();
+  });
+
+  it("filters a stale Song GET that completes after task deletion", async () => {
+    let resolveFirstSong: ((response: Response) => void) | undefined;
+    let songReads = 0;
+    const stale = task("late-task", "song-a", "processing");
+    const song = { id: "song-a", title: "late", artist: null, lyrics: null, has_source: false,
+      created_at: "2026-01-01T00:00:00Z", tasks: [stale] } as Song;
+    server.use(
+      http.get("/api/tasks", () => HttpResponse.json([])),
+      http.get("/api/songs/song-a", () => ++songReads === 1
+        ? new Promise((resolve) => { resolveFirstSong = resolve; })
+        : HttpResponse.json(song)),
+    );
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: Infinity } } });
+    const view = render(<QueryClientProvider client={client}><TaskMonitorProvider><><Consumer /><LateSongQuery songId="song-a" /></></TaskMonitorProvider></QueryClientProvider>);
+    await waitFor(() => expect(resolveFirstSong).toBeDefined());
+    client.setQueryData(["task", stale.id], stale);
+    client.setQueryData(["song", "song-a"], song);
+    act(() => currentMonitor.forgetTask(stale.id));
+    await waitFor(() => expect(songReads).toBeGreaterThanOrEqual(2));
+    await waitFor(() => expect(client.getQueryData<Song>(["song", "song-a"])?.tasks).toEqual([]));
+    await act(async () => { resolveFirstSong?.(HttpResponse.json(song)); await Promise.resolve(); });
+    expect(await screen.findByTestId("song-result")).toHaveTextContent("empty");
+    expect(client.getQueryData(["task", stale.id])).toBeUndefined();
+    expect(currentMonitor.activeTasks).toEqual([]);
+    view.unmount();
+  });
+
+  it("ignores queued valid, malformed, and error callbacks after terminal cleanup", async () => {
+    server.use(http.get("/api/tasks", () => HttpResponse.json([task("active-a", "song-a", "processing")])));
+    vi.stubGlobal("EventSource", FakeEventSource as unknown as typeof EventSource);
+    const view = renderMonitor();
+    await waitFor(() => expect(FakeEventSource.instances).toHaveLength(1));
+    const source = FakeEventSource.instances[0];
+    act(() => source.progress({ status: "completed" }));
+    expect(source.closed).toBe(true);
+    act(() => { source.progress({ status: "processing" }); source.emit("progress", { data: "{" }); source.emit("error"); });
+    expect(currentMonitor.recoveryIds).toEqual([]);
+    expect(screen.queryByRole("status")).not.toBeInTheDocument();
+    view.unmount();
+  });
+
+  it("invalidates all watchers and late publications on any non-form 401", async () => {
+    setToken("expiring-token");
+    const redirect = vi.spyOn(authRedirect, "toLogin").mockImplementation(() => {});
+    server.use(
+      http.get("/api/tasks", () => HttpResponse.json([task("a", "song-a", "processing"), task("b", "song-b", "processing")])),
+      http.get("/api/tasks/a", () => HttpResponse.json({ detail: "expired" }, { status: 401 })),
+    );
+    vi.stubGlobal("EventSource", FakeEventSource as unknown as typeof EventSource);
+    const view = renderMonitor();
+    await waitFor(() => expect(FakeEventSource.instances.filter((source) => !source.closed)).toHaveLength(2));
+    const other = FakeEventSource.instances.find((source) => source.url.includes("/b/"))!;
+    act(() => FakeEventSource.instances.find((source) => source.url.includes("/a/"))?.emit("error"));
+    await waitFor(() => expect(redirect).toHaveBeenCalledOnce());
+    expect(getToken()).toBeNull();
+    expect(FakeEventSource.instances.every((source) => source.closed)).toBe(true);
+    act(() => { other.progress({ status: "completed" }); other.emit("error"); });
+    expect(currentMonitor.activeTasks).toEqual([]);
+    expect(currentMonitor.recoveryIds).toEqual([]);
     view.unmount();
   });
 });

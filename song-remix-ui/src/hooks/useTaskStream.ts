@@ -6,7 +6,7 @@ import type { Task } from "@/lib/types";
 const allowedStatuses = new Set(["pending", "processing", "completed", "failed"]);
 
 export function useTaskStream(taskId: string) {
-  const { publish, forgetTask, setRecovery } = useTaskMonitor();
+  const { publish, forgetTask, setRecovery, stopAll, registerWatcher } = useTaskMonitor();
   useEffect(() => {
     let alive = true;
     let source: EventSource | null = null;
@@ -14,7 +14,8 @@ export function useTaskStream(taskId: string) {
     let controller: AbortController | null = null;
     let delay = 2500;
     let fallback = false;
-    const cleanup = () => {
+    const teardown = () => {
+      if (!alive) return;
       alive = false;
       source?.close();
       source = null;
@@ -22,6 +23,8 @@ export function useTaskStream(taskId: string) {
       controller?.abort();
       setRecovery(taskId, false);
     };
+    const unregister = registerWatcher(taskId, teardown);
+    if (!alive) return () => unregister();
     const onPartial = (raw: unknown) => {
       if (!alive || !raw || typeof raw !== "object" || Array.isArray(raw)) return false;
       const candidate = raw as Record<string, unknown>;
@@ -47,6 +50,7 @@ export function useTaskStream(taskId: string) {
         if (!alive || current.signal.aborted) return;
         delay = 2500;
         publish(taskId, task);
+        if (task.status === "completed" || task.status === "failed") teardown();
       } catch (error) {
         if (!alive || current.signal.aborted) return;
         if (error instanceof ApiError && error.status === 404) {
@@ -54,7 +58,8 @@ export function useTaskStream(taskId: string) {
           return;
         }
         if (error instanceof ApiError && error.status === 401) {
-          forgetTask(taskId);
+          stopAll();
+          teardown();
           return;
         }
         delay = Math.min(Math.max(delay * 2, 3000), 15000);
@@ -66,14 +71,16 @@ export function useTaskStream(taskId: string) {
     try {
       source = new EventSource(api.tasks.streamUrl(taskId));
       source.addEventListener("progress", (event) => {
+        if (!alive) return;
         try {
           const data: unknown = JSON.parse((event as MessageEvent<string>).data);
           if (!onPartial(data)) throw new Error("Malformed task update");
           if (data && typeof data === "object" && "status" in data &&
             ["completed", "failed"].includes(String((data as { status: unknown }).status))) {
-            source?.close(); source = null;
+            teardown();
           }
         } catch {
+          if (!alive) return;
           fallback = true;
           source?.close(); source = null;
           setRecovery(taskId, true);
@@ -88,10 +95,11 @@ export function useTaskStream(taskId: string) {
         void poll();
       });
     } catch {
+      if (!alive) return;
       fallback = true;
       setRecovery(taskId, true);
       void poll();
     }
-    return cleanup;
-  }, [taskId, publish, forgetTask, setRecovery]);
+    return () => { unregister(); teardown(); };
+  }, [taskId, publish, forgetTask, setRecovery, stopAll, registerWatcher]);
 }

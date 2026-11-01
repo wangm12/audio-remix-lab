@@ -1,5 +1,5 @@
 import { createContext, useContext } from "react";
-import type { Task } from "@/lib/types";
+import type { Song, Task } from "@/lib/types";
 
 export interface TaskMonitorValue {
   activeTasks: Task[];
@@ -10,6 +10,9 @@ export interface TaskMonitorValue {
   forgetSong: (songId: string) => void;
   stopAll: () => void;
   setRecovery: (id: string, recovering: boolean) => void;
+  visibleSong: (song: Song) => Song | null;
+  visibleSongs: (songs: Song[]) => Song[];
+  registerWatcher: (id: string, stop: () => void) => () => void;
 }
 
 export const TaskMonitorContext = createContext<TaskMonitorValue | null>(null);

@@ -23,11 +23,12 @@ export class ApiError extends Error {
   }
 }
 
-const fieldLabels: Record<string, string> = {
+const fieldLabels: Readonly<Record<string, string>> = Object.freeze({
   email: "Email", username: "Username", password: "Password", invite_code: "Invite code",
   title: "Title", artist: "Artist", lyrics: "Lyrics", style_prompt: "Style prompt",
   vocal_gender: "Vocal gender", engine: "Engine",
-};
+});
+const allowedFields = new Set(Object.keys(fieldLabels));
 
 function statusMessage(status: number) {
   if (status === 401) return "Your session has expired. Please sign in again.";
@@ -44,8 +45,9 @@ function safeIssues(detail: unknown): ApiFieldIssue[] {
   for (const item of detail.slice(0, 6)) {
     if (!item || typeof item !== "object" || Array.isArray(item)) continue;
     const entry = item as { loc?: unknown; msg?: unknown };
-    if (!Array.isArray(entry.loc) || typeof entry.msg !== "string") continue;
-    const field = [...entry.loc].reverse().find((part): part is string => typeof part === "string" && part in fieldLabels);
+    if (!Array.isArray(entry.loc) || !entry.loc.every((part) => typeof part === "string") || typeof entry.msg !== "string") continue;
+    const location = entry.loc.filter((part) => part !== "body" && part !== "query" && part !== "path");
+    const field = [...location].reverse().find((part): part is string => allowedFields.has(part));
     if (!field) continue;
     const message = entry.msg.replace(/[\r\n]+/g, " ").slice(0, 180);
     if (message) issues.push({ field, message });
@@ -68,6 +70,13 @@ function parseError(status: number, body: unknown): ApiError {
 export const authRedirect = {
   toLogin() { window.location.href = "/login"; },
 };
+const authInvalidationListeners = new Set<() => void>();
+export const authSession = {
+  subscribeInvalidation(listener: () => void) {
+    authInvalidationListeners.add(listener);
+    return () => { authInvalidationListeners.delete(listener); };
+  },
+};
 
 async function request<T>(
   path: string,
@@ -89,6 +98,7 @@ async function request<T>(
   if (res.status === 401) {
     if (!AUTH_FORM_PATHS.has(path)) {
       clearToken();
+      for (const invalidate of authInvalidationListeners) invalidate();
       authRedirect.toLogin();
     } else {
       const body = await res.json().catch(() => ({}));
