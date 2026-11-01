@@ -46,6 +46,10 @@ async def get_media_user(
     """Authenticate a side-effect-free media GET; release the lookup session before streaming."""
     if credentials is not None:
         subject = decode_access_token(credentials.credentials, scope=ACCESS_SCOPE)
+    elif request.headers.get("authorization") is not None:
+        # HTTPBearer(auto_error=False) treats empty or malformed Bearer values as absent.
+        # A supplied Authorization header must never silently downgrade to the cookie.
+        subject = None
     else:
         cookie = request.cookies.get(MEDIA_COOKIE_NAME)
         subject = decode_access_token(cookie, scope=MEDIA_SCOPE) if cookie else None

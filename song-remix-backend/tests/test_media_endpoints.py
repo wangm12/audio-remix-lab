@@ -48,6 +48,29 @@ async def test_bearer_tokens_still_work_for_audio(client):
     assert response.status_code == 200
 
 
+@pytest.mark.parametrize("authorization", ["Bearer", "Bearer ", "Bearer\t"])
+@pytest.mark.parametrize("media_route", ["audio", "stream"])
+async def test_empty_or_malformed_bearer_does_not_fall_back_to_media_cookie(
+    client, authorization, media_route
+):
+    _, _, task_id = await _alice_task_with_audio(client)
+    response = await client.get(
+        f"/api/tasks/{task_id}/{media_route}",
+        headers={"Authorization": authorization},
+    )
+    assert response.status_code == 401
+
+
+async def test_valid_bearer_takes_precedence_over_media_cookie(client):
+    alice, _, task_id = await _alice_task_with_audio(client)
+    bob = await register_user(client, "bob@example.com", "bob")
+    from app.core.security import MEDIA_SCOPE, create_access_token
+
+    client.cookies.set("remix_media", create_access_token(alice.id, scope=MEDIA_SCOPE), path="/api")
+    response = await client.get(f"/api/tasks/{task_id}/audio", headers=bob.headers)
+    assert response.status_code == 404
+
+
 async def test_invalid_or_media_bearer_does_not_fall_back_to_cookie(client):
     alice, _, task_id = await _alice_task_with_audio(client)
     from app.core.security import MEDIA_SCOPE, create_access_token
