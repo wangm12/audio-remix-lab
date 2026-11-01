@@ -1,15 +1,12 @@
-import { useRef, useEffect, useState, useCallback } from "react";
+import { useRef, useEffect, useCallback } from "react";
 import { Play, Pause, X, Music2 } from "lucide-react";
-import { registerAudioElement, useAudioPlayer } from "@/hooks/useAudioPlayer";
+import { registerAudioElement, releaseAudioElement, useAudioPlayer } from "@/hooks/useAudioPlayer";
 
 export function NowPlaying() {
-  const { trackId, trackTitle, audioUrl, isPlaying, toggle, stop } =
+  const { trackId, trackTitle, audioUrl, isPlaying, progress, duration, ownerEpoch, toggle, stop, updateMetrics } =
     useAudioPlayer();
   const audioRef = useRef<HTMLAudioElement>(null);
   const releaseMediaRef = useRef<(() => void) | null>(null);
-  const [metrics, setMetrics] = useState({ audioUrl: null as string | null, progress: 0, duration: 0 });
-  const progress = metrics.audioUrl === audioUrl ? metrics.progress : 0;
-  const duration = metrics.audioUrl === audioUrl ? metrics.duration : 0;
   const attachAudio = useCallback((audio: HTMLAudioElement | null) => {
     if (audioRef.current === audio) return;
     releaseMediaRef.current?.();
@@ -19,28 +16,33 @@ export function NowPlaying() {
 
   useEffect(() => {
     const audio = audioRef.current;
-    if (!audio) return;
+    if (!audio || !trackId || !audioUrl) return;
     if (isPlaying) {
-      audio.play().catch(() => {});
+      const ownerTrackId = trackId;
+      const ownerUrl = audioUrl;
+      const ownerEpochAtPlay = ownerEpoch;
+      void Promise.resolve(audio.play()).catch(() => {
+        const current = useAudioPlayer.getState();
+        if (current.trackId === ownerTrackId && current.audioUrl === ownerUrl && current.ownerEpoch === ownerEpochAtPlay) current.pause();
+        else if (current.ownerEpoch === null) releaseAudioElement(audio);
+      });
     } else {
       audio.pause();
     }
-  }, [isPlaying, audioUrl]);
+  }, [isPlaying, audioUrl, trackId, ownerEpoch]);
 
   useEffect(() => {
     const audio = audioRef.current;
-    if (!audio) return;
-    const onTime = () => setMetrics((current) => ({
-      audioUrl,
-      progress: audio.currentTime,
-      duration: current.audioUrl === audioUrl ? current.duration : audio.duration || 0,
-    }));
-    const onDur = () => setMetrics((current) => ({
-      audioUrl,
-      progress: current.audioUrl === audioUrl ? current.progress : 0,
-      duration: audio.duration || 0,
-    }));
-    const onEnd = () => useAudioPlayer.getState().pause();
+    if (!audio || !trackId || !audioUrl || ownerEpoch === null) return;
+    const ownerTrackId = trackId;
+    const ownerUrl = audioUrl;
+    const ownerEpochAtBind = ownerEpoch;
+    const onTime = () => updateMetrics(ownerTrackId, ownerUrl, ownerEpochAtBind, audio.currentTime, audio.duration || 0);
+    const onDur = () => updateMetrics(ownerTrackId, ownerUrl, ownerEpochAtBind, audio.currentTime, audio.duration || 0);
+    const onEnd = () => {
+      const current = useAudioPlayer.getState();
+      if (current.trackId === ownerTrackId && current.audioUrl === ownerUrl && current.ownerEpoch === ownerEpochAtBind) current.pause();
+    };
     audio.addEventListener("timeupdate", onTime);
     audio.addEventListener("loadedmetadata", onDur);
     audio.addEventListener("ended", onEnd);
@@ -49,7 +51,7 @@ export function NowPlaying() {
       audio.removeEventListener("loadedmetadata", onDur);
       audio.removeEventListener("ended", onEnd);
     };
-  }, [audioUrl]);
+  }, [audioUrl, trackId, ownerEpoch, updateMetrics]);
 
   if (!trackId || !audioUrl) return null;
 

@@ -3,7 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { http, HttpResponse } from "msw";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { useAudioPlayer } from "@/hooks/useAudioPlayer";
-import { clearToken, getToken } from "@/lib/auth";
+import { clearToken, getToken, setToken } from "@/lib/auth";
 import type { Song, Task } from "@/lib/types";
 import { renderApplication } from "@/test/render";
 import { server } from "@/test/server";
@@ -26,6 +26,45 @@ afterEach(() => {
 });
 
 describe("session lifetime in the real application router", () => {
+  it("releases the shell player and clears global metrics across unmount and remount", async () => {
+    server.use(
+      http.get("/api/auth/me", ({ request }) => HttpResponse.json({
+        id: request.headers.get("Authorization") === "Bearer identity-b" ? "B" : "A",
+        username: "Owner", email: "owner@example.test",
+      })),
+      http.get("/api/engines/status", () => HttpResponse.json({ health: [] })),
+      http.get("/api/tasks", () => HttpResponse.json([])),
+    );
+    const pause = vi.spyOn(HTMLMediaElement.prototype, "pause").mockImplementation(() => {});
+    const load = vi.spyOn(HTMLMediaElement.prototype, "load").mockImplementation(() => {});
+    const view = await renderApplication(["/settings"], "identity-a");
+    await screen.findByRole("heading", { name: "Settings" });
+    const player = useAudioPlayer.getState();
+    player.play("A-task", "A title", "/api/tasks/A-task/audio");
+    useAudioPlayer.getState().updateMetrics("A-task", "/api/tasks/A-task/audio", player.ownerEpoch ?? -1, 17, 80);
+    await screen.findByText("A title");
+    const audio = document.querySelector("audio");
+    expect(audio).not.toBeNull();
+
+    await act(async () => { await view.router.navigate({ to: "/login" }); });
+    await screen.findByRole("heading", { name: "Welcome back" });
+    expect(pause).toHaveBeenCalled();
+    expect(load).toHaveBeenCalled();
+    expect(audio?.getAttribute("src")).toBeNull();
+    expect(useAudioPlayer.getState()).toMatchObject({
+      trackId: null, trackTitle: null, audioUrl: null, isPlaying: false,
+      progress: 0, duration: 0, ownerEpoch: null,
+    });
+
+    await act(async () => {
+      setToken("identity-b");
+      await view.router.navigate({ to: "/settings" });
+    });
+    await screen.findByRole("heading", { name: "Settings" });
+    expect(screen.queryByText("A title")).not.toBeInTheDocument();
+    expect(useAudioPlayer.getState()).toMatchObject({ trackId: null, progress: 0, duration: 0 });
+  });
+
   it("tears down owner media and local session before a delayed logout response", async () => {
     let finishLogout: ((response: Response) => void) | undefined;
     let logoutStarted: (() => void) | undefined;

@@ -1,9 +1,12 @@
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { http, HttpResponse } from "msw";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { setToken } from "@/lib/auth";
 import { server } from "@/test/server";
 import { SongSetup } from "./SongSetup";
+
+afterEach(() => vi.unstubAllGlobals());
 
 const SONG = {
   id: "song-1",
@@ -83,5 +86,30 @@ describe("SongSetup", () => {
     await user.click(screen.getByRole("button", { name: "Continue to style selection" }));
 
     await vi.waitFor(() => expect(onSongCreated).toHaveBeenCalledWith("song-1"));
+  });
+
+  it("does not navigate from a SongSetup response body after unmount and identity replacement", async () => {
+    setToken("identity-a");
+    let finishBody!: (value: unknown) => void;
+    let finishStarted!: () => void;
+    const body = new Promise<unknown>((resolve) => { finishBody = resolve; });
+    const started = new Promise<void>((resolve) => { finishStarted = resolve; });
+    vi.stubGlobal("fetch", vi.fn(() => {
+      const response = new Response(null, { status: 201 });
+      response.json = () => { finishStarted(); return body; };
+      return Promise.resolve(response);
+    }));
+    const onSongCreated = vi.fn();
+    const user = userEvent.setup();
+    const view = render(<SongSetup onSongCreated={onSongCreated} />);
+    await user.type(screen.getByLabelText("Song title"), "Rain Butterfly");
+    const submit = user.click(screen.getByRole("button", { name: "Continue to style selection" }));
+    await started;
+    view.unmount();
+    setToken("identity-b");
+    finishBody(SONG);
+    await submit;
+    await Promise.resolve();
+    expect(onSongCreated).not.toHaveBeenCalled();
   });
 });

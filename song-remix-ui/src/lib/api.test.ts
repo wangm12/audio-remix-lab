@@ -1,8 +1,14 @@
 import { http, HttpResponse } from "msw";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { server } from "@/test/server";
 import { api, authRedirect, authSession } from "./api";
-import { clearToken, getToken, setToken } from "./auth";
+import { captureAuthSession, clearToken, getToken, setToken } from "./auth";
+import { beginAuthIntent } from "./auth-cookie-writers";
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+  vi.useRealTimers();
+});
 
 describe("api request helper", () => {
   it("sends the bearer token from localStorage", async () => {
@@ -159,6 +165,42 @@ describe("api request helper", () => {
     expect(getToken()).toBe("identity-b");
   });
 
+  it("fences the body after JSON decoding completes", async () => {
+    setToken("identity-a");
+    let finishBody!: (value: unknown) => void;
+    let finishStarted!: () => void;
+    const body = new Promise<unknown>((resolve) => { finishBody = resolve; });
+    const started = new Promise<void>((resolve) => { finishStarted = resolve; });
+    vi.stubGlobal("fetch", vi.fn(() => {
+      const response = new Response(null, { status: 200 });
+      response.json = () => { finishStarted(); return body; };
+      return Promise.resolve(response);
+    }));
+    const request = api.songs.list();
+    await started;
+    setToken("identity-b");
+    finishBody([{ id: "A-song" }]);
+    await expect(request).rejects.toMatchObject({ name: "AbortError" });
+  });
+
+  it("fences stale DELETE204 before mutation success can publish", async () => {
+    setToken("identity-a");
+    let finishResponse!: (response: Response) => void;
+    let finishStarted!: () => void;
+    const started = new Promise<void>((resolve) => { finishStarted = resolve; });
+    vi.stubGlobal("fetch", vi.fn(() => new Promise<Response>((resolve) => {
+      finishResponse = resolve;
+      finishStarted();
+    })));
+    const onSuccess = vi.fn();
+    const request = api.tasks.delete("A-task").then(onSuccess);
+    await started;
+    setToken("identity-b");
+    finishResponse(new Response(null, { status: 204 }));
+    await expect(request).rejects.toMatchObject({ name: "AbortError" });
+    expect(onSuccess).not.toHaveBeenCalled();
+  });
+
   it("does not let a request started without a token invalidate a later identity", async () => {
     let finish: ((response: Response) => void) | undefined;
     let started: (() => void) | undefined;
@@ -234,5 +276,113 @@ describe("api request helper", () => {
     );
     await expect(api.auth.logout()).resolves.toBeUndefined();
     expect(calls).toBe(1);
+  });
+
+  it("waits for an aborted logout fetch to settle before admitting a new login writer", async () => {
+    setToken("identity-a");
+    // Capture the real lease so the logout request sends A's Authorization header.
+    const owner = captureAuthSession();
+    const intent = beginAuthIntent();
+    let finishStarted!: () => void;
+    const started = new Promise<void>((resolve) => { finishStarted = resolve; });
+    let abortedAndSettled = false;
+    let loginAdmitted = false;
+    vi.stubGlobal("fetch", vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith("/auth/logout")) {
+        return new Promise<Response>((_resolve, reject) => {
+          const signal = init?.signal as AbortSignal;
+          finishStarted();
+          signal.addEventListener("abort", () => {
+            abortedAndSettled = true;
+            reject(signal.reason);
+          }, { once: true });
+        });
+      }
+      if (url.endsWith("/auth/login")) {
+        loginAdmitted = true;
+        expect(abortedAndSettled).toBe(true);
+        return Promise.resolve(Response.json({ access_token: "identity-b" }));
+      }
+      throw new Error(`Unexpected request ${url}`);
+    }));
+
+    const logout = api.auth.logout(owner, intent).catch(() => undefined);
+    await started;
+    expect(loginAdmitted).toBe(false);
+    const login = await api.auth.login({ email: "b@example.test", password: "password" });
+    await logout;
+    expect(abortedAndSettled).toBe(true);
+    expect(loginAdmitted).toBe(true);
+    expect(login.access_token).toBe("identity-b");
+  });
+
+  it("skips queued stale /me and form writers while preserving the reserved logout", async () => {
+    setToken("identity-a");
+    const owner = captureAuthSession();
+    const intent = beginAuthIntent();
+    let finishLogoutStarted!: () => void;
+    const logoutStarted = new Promise<void>((resolve) => { finishLogoutStarted = resolve; });
+    let logoutSignal: AbortSignal | undefined;
+    const admitted: string[] = [];
+    vi.stubGlobal("fetch", vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      admitted.push(url);
+      if (url.endsWith("/auth/logout")) {
+        return new Promise<Response>((_resolve, reject) => {
+          logoutSignal = init?.signal as AbortSignal;
+          finishLogoutStarted();
+          logoutSignal.addEventListener("abort", () => reject(logoutSignal?.reason), { once: true });
+        });
+      }
+      if (url.endsWith("/auth/register")) return Promise.resolve(Response.json({ access_token: "identity-b" }));
+      throw new Error(`A superseded writer reached fetch: ${url}`);
+    }));
+
+    const logout = api.auth.logout(owner, intent).catch(() => undefined);
+    await logoutStarted;
+    const me = api.auth.me().catch((error: unknown) => error);
+    const oldLogin = api.auth.login({ email: "old@example.test", password: "password" }).catch((error: unknown) => error);
+    const register = api.auth.register({ email: "b@example.test", username: "B", password: "password" });
+    const result = await register;
+    await Promise.all([logout, me, oldLogin]);
+    expect(logoutSignal?.aborted).toBe(true);
+    expect(admitted.map((url) => url.slice("/api".length))).toEqual(["/auth/logout", "/auth/register"]);
+    expect(result.access_token).toBe("identity-b");
+  });
+
+  it("aborts a timed out cookie writer and holds admission until fetch settles", async () => {
+    vi.useFakeTimers();
+    setToken("identity-a");
+    const owner = captureAuthSession();
+    const intent = beginAuthIntent();
+    let finishLogoutResponse!: (response: Response) => void;
+    let finishStarted!: () => void;
+    const started = new Promise<void>((resolve) => { finishStarted = resolve; });
+    let logoutSignal: AbortSignal | undefined;
+    let loginAdmitted = false;
+    vi.stubGlobal("fetch", vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith("/auth/logout")) {
+        return new Promise<Response>((resolve) => {
+          logoutSignal = init?.signal as AbortSignal;
+          finishLogoutResponse = resolve;
+          finishStarted();
+        });
+      }
+      loginAdmitted = true;
+      return Promise.resolve(Response.json({ access_token: "identity-b" }));
+    }));
+
+    const logout = api.auth.logout(owner, intent).catch(() => undefined);
+    await started;
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(logoutSignal?.aborted).toBe(true);
+    const login = api.auth.login({ email: "b@example.test", password: "password" });
+    await Promise.resolve();
+    expect(loginAdmitted).toBe(false);
+    finishLogoutResponse(new Response(null, { status: 204 }));
+    await Promise.all([logout, login]);
+    expect(loginAdmitted).toBe(true);
   });
 });

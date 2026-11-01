@@ -1,8 +1,10 @@
-import type { ReactNode } from "react";
+import { useEffect, type ReactNode } from "react";
 import { Toaster } from "sonner";
 import { Nav } from "./Nav";
 import { NowPlaying } from "./NowPlaying";
 import { useTaskMonitor } from "./TaskMonitorContext";
+import { captureAuthSession, isAuthSessionCurrent } from "@/lib/auth";
+import { useAudioPlayer } from "@/hooks/useAudioPlayer";
 
 function MonitorRecoveryNotice() {
   const { recoveryIds } = useTaskMonitor();
@@ -13,6 +15,13 @@ function MonitorRecoveryNotice() {
 }
 
 export function AppShell({ children }: { children: ReactNode }) {
+  useEffect(() => {
+    const owner = captureAuthSession();
+    return () => {
+      if (isAuthSessionCurrent(owner)) useAudioPlayer.getState().stop();
+    };
+  }, []);
+
   return (
     <div className="flex h-screen overflow-hidden">
       <Nav />

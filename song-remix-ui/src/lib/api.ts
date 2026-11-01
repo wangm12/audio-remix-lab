@@ -1,4 +1,5 @@
 import { captureAuthSession, clearTokenIfCurrent, isAuthSessionCurrent, type AuthSessionLease } from "./auth";
+import { beginAuthIntent, currentAuthIntent, isAuthIntentCurrent, runAuthCookieWriter, type AuthIntent } from "./auth-cookie-writers";
 import type {
   User,
   Song,
@@ -87,6 +88,20 @@ async function request<T>(
   path: string,
   options: RequestInit = {},
   session: AuthSessionLease = captureAuthSession(),
+  writer?: { intent: AuthIntent; alwaysRun?: boolean; ignoreSession?: boolean },
+): Promise<T> {
+  const perform = (signal?: AbortSignal) => requestResponse<T>(path, options, session, signal, writer);
+  return writer
+    ? runAuthCookieWriter(writer.intent, options.signal ?? undefined, writer.alwaysRun === true, (signal) => perform(signal))
+    : perform(options.signal ?? undefined);
+}
+
+async function requestResponse<T>(
+  path: string,
+  options: RequestInit,
+  session: AuthSessionLease,
+  signal: AbortSignal | undefined,
+  writer: { intent: AuthIntent; alwaysRun?: boolean; ignoreSession?: boolean } | undefined,
 ): Promise<T> {
   const headers: Record<string, string> = {
     ...(options.headers as Record<string, string>),
@@ -98,29 +113,47 @@ async function request<T>(
     headers["Content-Type"] = "application/json";
   }
 
-  const res = await fetch(`${BASE}${path}`, { ...options, headers });
+  const res = await fetch(`${BASE}${path}`, { ...options, headers, signal });
 
   if (res.status === 401) {
+    const body = await res.json().catch(() => ({}));
+    if (writer && !isAuthIntentCurrent(writer.intent)) {
+      throw new DOMException("Authentication intent was superseded", "AbortError");
+    }
     if (!AUTH_FORM_PATHS.has(path)) {
-      if (clearTokenIfCurrent(session)) {
+      if (isAuthSessionCurrent(session) && (!writer || !writer.ignoreSession) && clearTokenIfCurrent(session)) {
         for (const invalidate of authInvalidationListeners) invalidate();
         authRedirect.toLogin();
       }
     } else {
-      const body = await res.json().catch(() => ({}));
       throw parseError(res.status, body);
     }
     throw new ApiError(statusMessage(401), 401);
   }
-  if (res.status === 204) return undefined as T;
-  if (!isAuthSessionCurrent(session)) {
-    throw new DOMException("Response belongs to a replaced session", "AbortError");
+  if (res.status === 204) {
+    assertResponseCurrent(session, writer);
+    return undefined as T;
   }
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
+    assertResponseCurrent(session, writer);
     throw parseError(res.status, body);
   }
-  return res.json();
+  const body = await res.json();
+  assertResponseCurrent(session, writer);
+  return body as T;
+}
+
+function assertResponseCurrent(
+  session: AuthSessionLease,
+  writer: { intent: AuthIntent; ignoreSession?: boolean } | undefined,
+): void {
+  if (writer && !isAuthIntentCurrent(writer.intent)) {
+    throw new DOMException("Authentication intent was superseded", "AbortError");
+  }
+  if (!writer?.ignoreSession && !isAuthSessionCurrent(session)) {
+    throw new DOMException("Response belongs to a replaced session", "AbortError");
+  }
 }
 
 export const api = {
@@ -130,18 +163,26 @@ export const api = {
       username: string;
       password: string;
       invite_code?: string;
-    }) =>
-      request<{ access_token: string }>("/auth/register", {
+    }) => {
+      const intent = beginAuthIntent();
+      return request<{ access_token: string }>("/auth/register", {
         method: "POST",
         body: JSON.stringify(data),
-      }),
-    login: (data: { email: string; password: string }) =>
-      request<{ access_token: string }>("/auth/login", {
+      }, captureAuthSession(), { intent }).then((result) => ({ ...result, authIntent: intent }));
+    },
+    login: (data: { email: string; password: string }) => {
+      const intent = beginAuthIntent();
+      return request<{ access_token: string }>("/auth/login", {
         method: "POST",
         body: JSON.stringify(data),
-      }),
-    me: () => request<User>("/auth/me"),
-    logout: (session?: AuthSessionLease) => request<void>("/auth/logout", { method: "POST" }, session),
+      }, captureAuthSession(), { intent }).then((result) => ({ ...result, authIntent: intent }));
+    },
+    me: (signal?: AbortSignal) => {
+      const intent = currentAuthIntent();
+      return request<User>("/auth/me", { signal }, captureAuthSession(), { intent });
+    },
+    logout: (session?: AuthSessionLease, intent: AuthIntent = currentAuthIntent()) =>
+      request<void>("/auth/logout", { method: "POST" }, session, { intent, alwaysRun: true, ignoreSession: true }),
   },
 
   songs: {

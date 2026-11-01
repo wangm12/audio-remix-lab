@@ -2,6 +2,7 @@ import { useRef, useState, useEffect } from "react";
 import { Play, Pause, Download, Headphones } from "lucide-react";
 import { api } from "@/lib/api";
 import { registerAudioElement, useAudioPlayer } from "@/hooks/useAudioPlayer";
+import { captureAuthSession, isAuthSessionCurrent, subscribeAuthIdentity, type AuthSessionLease } from "@/lib/auth";
 
 interface ResultPlayerProps {
   taskId: string;
@@ -14,18 +15,29 @@ export function ResultPlayer({ taskId, songTitle }: ResultPlayerProps) {
   const [progress, setProgress] = useState(0);
   const [duration, setDuration] = useState(0);
   const globalPlayer = useAudioPlayer();
+  const ownerRef = useRef<AuthSessionLease | null>(null);
 
   const audioUrl = api.tasks.audioUrl(taskId);
 
   useEffect(() => {
+    ownerRef.current = captureAuthSession();
+    return subscribeAuthIdentity(() => {
+      setPlaying(false);
+      setProgress(0);
+      setDuration(0);
+    });
+  }, []);
+
+  useEffect(() => {
     const audio = audioRef.current;
-    if (!audio) return;
+    const owner = ownerRef.current;
+    if (!audio || !owner) return;
     const unregisterMedia = registerAudioElement(audio);
 
-    const onTime = () => setProgress(audio.currentTime);
-    const onDur = () => setDuration(audio.duration);
-    const onEnd = () => setPlaying(false);
-    const onPause = () => setPlaying(false);
+    const onTime = () => { if (isAuthSessionCurrent(owner)) setProgress(audio.currentTime); };
+    const onDur = () => { if (isAuthSessionCurrent(owner)) setDuration(audio.duration); };
+    const onEnd = () => { if (isAuthSessionCurrent(owner)) setPlaying(false); };
+    const onPause = () => { if (isAuthSessionCurrent(owner)) setPlaying(false); };
 
     audio.addEventListener("timeupdate", onTime);
     audio.addEventListener("loadedmetadata", onDur);
@@ -38,20 +50,25 @@ export function ResultPlayer({ taskId, songTitle }: ResultPlayerProps) {
       audio.removeEventListener("pause", onPause);
       unregisterMedia();
     };
-  }, []);
+  }, [audioUrl]);
 
   const toggle = () => {
     const audio = audioRef.current;
-    if (!audio) return;
+    const owner = ownerRef.current;
+    if (!audio || !owner || !isAuthSessionCurrent(owner)) return;
     if (playing) {
       audio.pause();
     } else {
-      audio.play();
+      void Promise.resolve(audio.play()).catch(() => {
+        if (isAuthSessionCurrent(owner)) setPlaying(false);
+      });
     }
-    setPlaying(!playing);
+    if (isAuthSessionCurrent(owner)) setPlaying(!playing);
   };
 
   const playInGlobal = () => {
+    const owner = ownerRef.current;
+    if (!owner || !isAuthSessionCurrent(owner)) return;
     globalPlayer.play(taskId, songTitle || "R&B Remix", audioUrl);
   };
 
