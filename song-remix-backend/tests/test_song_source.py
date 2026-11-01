@@ -1,4 +1,5 @@
 import asyncio
+import io
 import threading
 import uuid
 from pathlib import Path
@@ -13,9 +14,16 @@ from app.models.task import GenerationTask
 from app.main import app
 from app.services.engine_manager import engine_manager
 from app.services.task_service import run_generation
+from app.services import task_service
 from app.api import songs as songs_api
+from app.schemas.song import StructureLyricsRequest
+from app.utils import storage
 from app.utils.storage import resolve_key
-from tests.helpers import convert_audio, create_song, register_user, write_sine_wav
+from fastapi import UploadFile
+from sqlalchemy.ext.asyncio import AsyncSession
+from app.database import async_session
+from app.models.user import User
+from tests.helpers import convert_audio, create_song, insert_task, register_user, write_sine_wav
 
 
 def _file(path):
@@ -396,6 +404,171 @@ async def test_failed_reupload_keeps_the_previous_source(client, db, tmp_path):
     row = await db.get(Song, uuid.UUID(song["id"]))
     await db.refresh(row)
     assert row.source_audio_key == key
+
+
+async def test_source_free_generation_keeps_empty_capture_after_later_upload(client, tmp_path, monkeypatch):
+    alice = await register_user(client)
+    song = await create_song(client, alice)
+    task_id = uuid.UUID(await insert_task(alice.id, song["id"], status="pending"))
+    captured = asyncio.Event()
+    release = asyncio.Event()
+    original_impl = task_service._run_generation_impl
+
+    async def pause_after_capture(task_id, private_source=None):
+        captured.set()
+        await release.wait()
+        return await original_impl(task_id, private_source)
+
+    class ReadingEngine:
+        async def submit_cover(self, **kwargs):
+            self.source = kwargs["source_audio_path"]
+            if self.source:
+                Path(self.source).read_bytes()
+            return "fixture"
+
+        async def poll_result(self, _):
+            return {"status": 2, "error": "done"}
+
+    engine = ReadingEngine()
+    monkeypatch.setattr(task_service, "_run_generation_impl", pause_after_capture)
+    monkeypatch.setattr(engine_manager, "get", lambda _: engine)
+    runner = asyncio.create_task(task_service.run_generation(task_id))
+    try:
+        await asyncio.wait_for(captured.wait(), 5)
+        wav = write_sine_wav(tmp_path / "late.wav")
+        assert (await client.post(f"/api/songs/{song['id']}/source", files=_file(wav), headers=alice.headers)).status_code == 200
+    finally:
+        release.set()
+    await asyncio.wait_for(runner, 8)
+    assert engine.source == ""
+
+
+async def test_upload_cancel_waits_for_atomic_store_worker_before_compensation(client, db, tmp_path, monkeypatch):
+    alice = await register_user(client)
+    song = await create_song(client, alice)
+    wav = write_sine_wav(tmp_path / "old.wav")
+    assert (await client.post(f"/api/songs/{song['id']}/source", files=_file(wav), headers=alice.headers)).status_code == 200
+    row = await db.get(Song, uuid.UUID(song["id"]))
+    await db.refresh(row)
+    old_key, old_bytes = row.source_audio_key, resolve_key(row.source_audio_key).read_bytes()
+    entered, release, done = threading.Event(), threading.Event(), threading.Event()
+    original_replace = storage.os.replace
+
+    def gated_replace(src, dst):
+        entered.set()
+        try:
+            assert release.wait(8)
+            return original_replace(src, dst)
+        finally:
+            done.set()
+
+    monkeypatch.setattr(storage.os, "replace", gated_replace)
+    async with async_session() as session:
+        user = await session.get(User, uuid.UUID(alice.id))
+        request = asyncio.create_task(
+            songs_api.upload_source(
+                uuid.UUID(song["id"]), UploadFile(io.BytesIO(wav.read_bytes()), filename="new.wav"), session, user
+            )
+        )
+        try:
+            assert await asyncio.to_thread(entered.wait, 5)
+            request.cancel()
+            ended_while_worker_blocked = False
+            try:
+                await asyncio.wait_for(asyncio.shield(request), 0.1)
+                ended_while_worker_blocked = True
+            except asyncio.CancelledError:
+                ended_while_worker_blocked = True
+            except asyncio.TimeoutError:
+                pass
+        finally:
+            release.set()
+            assert await asyncio.to_thread(done.wait, 5)
+        result = await asyncio.gather(request, return_exceptions=True)
+        assert isinstance(result[0], asyncio.CancelledError)
+        assert not ended_while_worker_blocked, "upload compensation completed while the store worker was blocked"
+    await db.refresh(row)
+    assert row.source_audio_key == old_key
+    assert resolve_key(old_key).read_bytes() == old_bytes
+    assert list(resolve_key(old_key).parent.iterdir()) == [resolve_key(old_key)]
+
+
+async def test_structure_cancel_waits_for_copy_worker_then_removes_private_file(client, db, tmp_path, monkeypatch):
+    alice = await register_user(client)
+    song = await create_song(client, alice)
+    wav = write_sine_wav(tmp_path / "source.wav")
+    assert (await client.post(f"/api/songs/{song['id']}/source", files=_file(wav), headers=alice.headers)).status_code == 200
+    copied, release, done = threading.Event(), threading.Event(), threading.Event()
+    destinations = []
+    original_copy = songs_api.shutil.copyfile
+
+    def gated_copy(src, dst):
+        try:
+            original_copy(src, dst)
+            destinations.append(Path(dst))
+            copied.set()
+            assert release.wait(8)
+        finally:
+            done.set()
+
+    monkeypatch.setattr(songs_api.shutil, "copyfile", gated_copy)
+    async with async_session() as session:
+        user = await session.get(User, uuid.UUID(alice.id))
+        request = asyncio.create_task(
+            songs_api.structure_lyrics(
+                uuid.UUID(song["id"]), StructureLyricsRequest(lyrics="line"), session, user
+            )
+        )
+        try:
+            assert await asyncio.to_thread(copied.wait, 5)
+            request.cancel()
+            ended_while_worker_blocked = False
+            try:
+                await asyncio.wait_for(asyncio.shield(request), 0.1)
+                ended_while_worker_blocked = True
+            except asyncio.CancelledError:
+                ended_while_worker_blocked = True
+            except asyncio.TimeoutError:
+                pass
+        finally:
+            release.set()
+            assert await asyncio.to_thread(done.wait, 5)
+        result = await asyncio.gather(request, return_exceptions=True)
+        assert isinstance(result[0], asyncio.CancelledError)
+        assert not ended_while_worker_blocked, "structure route completed while the private-copy worker was blocked"
+    assert destinations and all(not path.exists() for path in destinations)
+
+
+async def test_upload_response_survives_song_delete_after_commit(client, tmp_path, monkeypatch):
+    alice = await register_user(client)
+    song = await create_song(client, alice)
+    initial = write_sine_wav(tmp_path / "old.wav")
+    assert (await client.post(f"/api/songs/{song['id']}/source", files=_file(initial), headers=alice.headers)).status_code == 200
+    new = write_sine_wav(tmp_path / "new.wav", frequency=990)
+    committed, release = asyncio.Event(), asyncio.Event()
+    original_commit = AsyncSession.commit
+    first = True
+
+    async def gated_commit(session):
+        nonlocal first
+        changed = any(isinstance(item, Song) and item.source_audio_key for item in session.dirty)
+        await original_commit(session)
+        if changed and first:
+            first = False
+            committed.set()
+            await release.wait()
+
+    monkeypatch.setattr(AsyncSession, "commit", gated_commit)
+    upload = asyncio.create_task(client.post(f"/api/songs/{song['id']}/source", files=_file(new), headers=alice.headers))
+    try:
+        await asyncio.wait_for(committed.wait(), 5)
+        deleted = await client.delete(f"/api/songs/{song['id']}", headers=alice.headers)
+        assert deleted.status_code == 204
+    finally:
+        release.set()
+    uploaded = await asyncio.wait_for(upload, 8)
+    assert uploaded.status_code == 200, uploaded.text
+    assert uploaded.json()["has_source"] is True
 
 
 async def _set_legacy_key(db, song_id: str, key: str) -> None:

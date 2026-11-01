@@ -1,3 +1,4 @@
+import asyncio
 import tempfile
 import shutil
 import logging
@@ -41,6 +42,21 @@ from app.utils.storage import (
 router = APIRouter(prefix="/api/songs", tags=["songs"])
 
 UPLOAD_CHUNK_BYTES = 1024 * 1024
+
+
+async def _threadpool_to_completion(func, *args):
+    """Run blocking work and, on cancellation, wait until its thread has stopped."""
+    worker = asyncio.create_task(run_in_threadpool(func, *args))
+    try:
+        return await asyncio.shield(worker)
+    except asyncio.CancelledError:
+        # shield keeps the worker alive; drain it before callers compensate or
+        # unlink inputs. Then preserve cancellation for the route's outer handler.
+        try:
+            await asyncio.shield(worker)
+        except Exception:
+            pass
+        raise
 
 
 async def _get_owned_song(db: AsyncSession, song_id: UUID, user: User, *, with_tasks: bool = False) -> Song:
@@ -170,7 +186,7 @@ async def upload_source(
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Song not found")
         old_key = song.source_audio_key
         try:
-            await run_in_threadpool(store_file, new_key, incoming)
+            await _threadpool_to_completion(store_file, new_key, incoming)
             song.source_audio_key = new_key
             await db.commit()
         except BaseException:
@@ -195,7 +211,6 @@ async def upload_source(
         except Exception:
             await db.rollback()
             logging.getLogger(__name__).warning("Could not remove an obsolete song source after upload", exc_info=True)
-        await db.refresh(song)
     return song
 
 
@@ -220,27 +235,26 @@ async def structure_lyrics(
 
     private_source: Path | None = None
     try:
-        source = resolve_key(song.source_audio_key)
-        if not source.is_file():
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Source audio is not available")
-        handle = tempfile.NamedTemporaryFile(prefix="remix-structure-", suffix=source.suffix, delete=False)
-        private_source = Path(handle.name)
-        handle.close()
-        await run_in_threadpool(shutil.copyfile, source, private_source)
-    except HTTPException:
-        if private_source:
-            private_source.unlink(missing_ok=True)
-        raise
-    except Exception as e:
-        if private_source:
-            private_source.unlink(missing_ok=True)
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Source audio is not available") from e
+        try:
+            source = resolve_key(song.source_audio_key)
+            if not source.is_file():
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Source audio is not available")
+            handle = tempfile.NamedTemporaryFile(prefix="remix-structure-", suffix=source.suffix, delete=False)
+            private_source = Path(handle.name)
+            handle.close()
+            await _threadpool_to_completion(shutil.copyfile, source, private_source)
+        except HTTPException:
+            raise
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Source audio is not available") from e
 
-    await db.rollback()  # release the Song row lock before audio analysis
-    try:
+        await db.rollback()  # release the Song row lock before audio analysis
         interludes, total_duration = await detect_interludes(str(private_source))
     finally:
-        private_source.unlink(missing_ok=True)
+        if private_source:
+            private_source.unlink(missing_ok=True)
     structured = insert_interlude_markers(req.lyrics, interludes, total_duration)
 
     return StructureLyricsResponse(lyrics=structured, interludes=interludes)

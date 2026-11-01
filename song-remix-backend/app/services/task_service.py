@@ -107,21 +107,10 @@ async def _run_generation_impl(task_id: uuid.UUID, private_source: str | None = 
             await _save_task_state(db, task_id, status="failed", error_message=str(e))
             return
 
-        source_path = ""
-        if private_source is not None:
-            source_path = private_source
-        elif song.source_audio_key:
-            try:
-                resolved = resolve_key(song.source_audio_key)
-                usable = resolved.is_file()
-            except InvalidStorageKey:
-                usable = False
-            if not usable:
-                await _save_task_state(
-                    db, task_id, status="failed", error_message="Source audio is missing; upload it again"
-                )
-                return
-            source_path = str(resolved)
+        # `private_source` is the runner's authoritative capture result: an empty
+        # string means the Song was source-free at claim time. Never fall back to
+        # the mutable Song row here after the lock has been released.
+        source_path = private_source or ""
 
         task.status = "processing"
         task.started_at = datetime.now(timezone.utc)
@@ -267,11 +256,14 @@ async def run_generation(task_id: uuid.UUID):
                         resolved = None
                 except InvalidStorageKey:
                     resolved = None
-                if resolved is not None:
-                    handle = tempfile.NamedTemporaryFile(prefix="remix-source-", suffix=suffix, delete=False)
-                    private_source = handle.name
-                    handle.close()
-                    shutil.copyfile(resolved, Path(private_source))
+                if resolved is None:
+                    raise FileNotFoundError("Source audio is missing; upload it again")
+                handle = tempfile.NamedTemporaryFile(prefix="remix-source-", suffix=suffix, delete=False)
+                private_source = handle.name
+                handle.close()
+                shutil.copyfile(resolved, Path(private_source))
+            else:
+                private_source = ""
             task.status = "processing"
             task.started_at = datetime.now(timezone.utc)
             await db.commit()
@@ -281,9 +273,11 @@ async def run_generation(task_id: uuid.UUID):
         if not isinstance(e, asyncio.CancelledError):
             try:
                 async with async_session() as db:
-                    await _save_task_state(db, task_id, status="failed", error_message=f"Input preparation failed: {e}")
+                    message = str(e) if isinstance(e, FileNotFoundError) else f"Input preparation failed: {e}"
+                    await _save_task_state(db, task_id, status="failed", error_message=message)
             except Exception:
                 pass
+            return
         raise
     try:
         await _run_generation_impl(task_id, private_source=private_source)
