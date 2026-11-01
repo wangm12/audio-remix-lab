@@ -9,9 +9,11 @@ config = context.config
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
-from app.database import Base
+from app.config import settings  # noqa: E402
+from app.database import Base  # noqa: E402
 from app.models import User, Song, GenerationTask, StylePreset  # noqa: F401, E402
 
+config.set_main_option("sqlalchemy.url", settings.DATABASE_URL.replace("%", "%%"))
 target_metadata = Base.metadata
 
 

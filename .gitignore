@@ -10,6 +10,8 @@ build/
 .DS_Store
 pgdata/
 acestep-cache/
+.pytest_cache/
+.ruff_cache/
 music-mix/
 .worktrees/
 .superpowers/

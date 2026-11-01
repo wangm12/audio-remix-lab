@@ -28,5 +28,5 @@ class AbstractEngine(ABC):
     async def health_check(self) -> dict:
         """Check engine availability. Returns dict with 'healthy' bool and optional info."""
 
-    async def close(self):
+    async def close(self):  # noqa: B027
         """Cleanup resources."""

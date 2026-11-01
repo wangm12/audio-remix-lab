@@ -15,7 +15,7 @@ async def register(req: RegisterRequest, db: AsyncSession = Depends(get_db)):
     try:
         user = await register_user(db, req.email, req.username, req.password)
     except ValueError as e:
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(e))
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(e)) from e
     token = create_token_for_user(user)
     return TokenResponse(access_token=token)
 
