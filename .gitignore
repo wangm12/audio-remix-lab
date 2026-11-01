@@ -11,3 +11,5 @@ build/
 pgdata/
 acestep-cache/
 music-mix/
+.worktrees/
+.superpowers/
