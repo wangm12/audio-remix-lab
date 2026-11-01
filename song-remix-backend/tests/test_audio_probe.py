@@ -29,3 +29,27 @@ async def test_probe_requires_ffprobe(monkeypatch, tmp_path):
     monkeypatch.setattr(audio_probe.shutil, "which", lambda name: None)
     with pytest.raises(RuntimeError, match="ffprobe"):
         await probe_audio(tmp_path / "missing.wav")
+
+
+async def test_cancelling_the_probe_kills_ffprobe(monkeypatch, tmp_path):
+    import asyncio
+    import os
+    import stat
+
+    pidfile = tmp_path / "pid"
+    script = tmp_path / "ffprobe"
+    script.write_text(f'#!/bin/sh\necho $$ > "{pidfile}"\nexec sleep 30\n')
+    script.chmod(script.stat().st_mode | stat.S_IEXEC)
+    monkeypatch.setattr(audio_probe.shutil, "which", lambda name: str(script))
+
+    task = asyncio.create_task(probe_audio(tmp_path / "x.wav"))
+    for _ in range(100):
+        if pidfile.exists() and pidfile.read_text().strip():
+            break
+        await asyncio.sleep(0.02)
+    pid = int(pidfile.read_text())
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    with pytest.raises(ProcessLookupError):
+        os.kill(pid, 0)

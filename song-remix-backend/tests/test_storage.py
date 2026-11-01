@@ -85,3 +85,36 @@ def test_legacy_paths_are_trusted_only_inside_the_root(tmp_path):
     assert outside.exists()
     delete_legacy_file(str(inside))
     assert not inside.exists()
+
+
+def test_write_key_removes_part_file_when_the_write_fails(isolated_root):
+    (isolated_root / "users/u/target").mkdir(parents=True)
+    with pytest.raises(OSError):
+        write_key("users/u/target", b"data")
+    assert not list((isolated_root / "users/u").glob("*.part"))
+
+
+@pytest.mark.parametrize("failing", ["copyfile", "replace"])
+def test_store_file_removes_part_file_when_it_fails(isolated_root, tmp_path, monkeypatch, failing):
+    source = tmp_path / "incoming.bin"
+    source.write_bytes(b"audio")
+
+    def boom(*args, **kwargs):
+        raise OSError("disk full")
+
+    if failing == "copyfile":
+        monkeypatch.setattr(storage.shutil, "copyfile", boom)
+    else:
+        monkeypatch.setattr(storage.os, "replace", boom)
+    with pytest.raises(OSError):
+        store_file("users/u/songs/s/source.wav", source)
+    assert not list((isolated_root / "users/u/songs/s").glob("*.part"))
+
+
+def test_symlink_loops_are_invalid_keys(isolated_root):
+    isolated_root.mkdir(parents=True, exist_ok=True)
+    (isolated_root / "a").symlink_to(isolated_root / "b")
+    (isolated_root / "b").symlink_to(isolated_root / "a")
+    with pytest.raises(InvalidStorageKey):
+        resolve_key("a/file.txt")
+    assert delete_key("a/file.txt") is None

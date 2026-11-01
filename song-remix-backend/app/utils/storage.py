@@ -1,6 +1,8 @@
 import os
 import shutil
 import uuid
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path, PurePosixPath
 
 from app.config import settings
@@ -24,7 +26,10 @@ def resolve_key(key: str) -> Path:
     if PurePosixPath(key).is_absolute() or any(part in ("", ".", "..") for part in key.split("/")):
         raise InvalidStorageKey(f"Invalid storage key: {key!r}")
     root = storage_root()
-    resolved = (root / key).resolve()
+    try:
+        resolved = (root / key).resolve()
+    except (RuntimeError, OSError):
+        raise InvalidStorageKey(f"Unresolvable storage key: {key!r}") from None
     if resolved == root or not resolved.is_relative_to(root):
         raise InvalidStorageKey(f"Storage key escapes the storage root: {key!r}")
     return resolved
@@ -44,21 +49,30 @@ def _partial_path(path: Path) -> Path:
     return path.with_name(f"{path.name}.{uuid.uuid4().hex}.part")
 
 
-def write_key(key: str, data: bytes) -> Path:
-    path = resolve_key(key)
+@contextmanager
+def _atomic_target(path: Path) -> Iterator[Path]:
+    """Yield a temp `.part` path; rename it onto `path` on success, remove it on any failure."""
     path.parent.mkdir(parents=True, exist_ok=True)
     partial = _partial_path(path)
-    partial.write_bytes(data)
-    os.replace(partial, path)
+    try:
+        yield partial
+        os.replace(partial, path)
+    except BaseException:
+        partial.unlink(missing_ok=True)
+        raise
+
+
+def write_key(key: str, data: bytes) -> Path:
+    path = resolve_key(key)
+    with _atomic_target(path) as partial:
+        partial.write_bytes(data)
     return path
 
 
 def store_file(key: str, source: Path) -> Path:
     path = resolve_key(key)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    partial = _partial_path(path)
-    shutil.copyfile(source, partial)
-    os.replace(partial, path)
+    with _atomic_target(path) as partial:
+        shutil.copyfile(source, partial)
     return path
 
 

@@ -39,6 +39,7 @@ async def probe_audio(path: Path) -> AudioProbe:
         "json",
         "-show_format",
         "-show_streams",
+        "-i",
         str(path),
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
@@ -46,9 +47,11 @@ async def probe_audio(path: Path) -> AudioProbe:
     try:
         stdout, _ = await asyncio.wait_for(process.communicate(), timeout=PROBE_TIMEOUT_SECONDS)
     except TimeoutError:
-        process.kill()
-        await process.wait()
         raise AudioProbeError("Timed out while inspecting the audio file") from None
+    finally:
+        if process.returncode is None:
+            process.kill()
+            await asyncio.shield(process.wait())
     if process.returncode != 0:
         raise AudioProbeError("The file is not a readable audio file")
     try:
