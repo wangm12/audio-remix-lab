@@ -48,7 +48,7 @@ Commit: `744a9f1` (`fix auth cookie writer and media ownership races`), based on
 
 ## Unit 1 Fix 2 — fresh Luna implementation after independent review
 
-Implementation commit: pending. Based on `744a9f1`; this fix responds only to the four Fix1 review findings and the downstream publication gaps explicitly permitted in that review.
+Implementation commit: `012a6a3eb2ef301444f39793909f15a4b8e9126c` (`fix session publication and media ownership races`). Based on `744a9f1`; this fix responds only to the four Fix1 review findings and the downstream publication gaps explicitly permitted in that review.
 
 ### Changes and scope
 
