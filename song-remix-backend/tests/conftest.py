@@ -8,6 +8,7 @@ import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import async_session
+from app.core.rate_limit import login_rate_limiter
 from app.main import app
 from tests._env import TEST_DATABASE_URL
 from tests.helpers import recreate_database, run_alembic, truncate_all_tables
@@ -22,6 +23,7 @@ def migrated_database() -> str:
 
 @pytest.fixture(autouse=True)
 def db_clean(migrated_database: str) -> None:
+    login_rate_limiter.reset()
     truncate_all_tables(migrated_database)
 
 

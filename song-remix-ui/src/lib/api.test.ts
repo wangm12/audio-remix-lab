@@ -2,7 +2,7 @@ import { http, HttpResponse } from "msw";
 import { describe, expect, it } from "vitest";
 import { server } from "@/test/server";
 import { api } from "./api";
-import { setToken } from "./auth";
+import { getToken, setToken } from "./auth";
 
 describe("api request helper", () => {
   it("sends the bearer token from localStorage", async () => {
@@ -25,6 +25,18 @@ describe("api request helper", () => {
       ),
     );
     await expect(api.songs.list()).rejects.toThrow("boom");
+  });
+
+  it.each(["login", "register"] as const)("keeps %s 401 errors in the form", async (endpoint) => {
+    setToken("still-authenticated");
+    server.use(
+      http.post(`/api/auth/${endpoint}`, () => HttpResponse.json({ detail: "Invalid credentials" }, { status: 401 })),
+    );
+    const result = endpoint === "login"
+      ? api.auth.login({ email: "a@example.com", password: "wrong" })
+      : api.auth.register({ email: "a@example.com", username: "a", password: "wrong" });
+    await expect(result).rejects.toThrow("Invalid credentials");
+    expect(getToken()).toBe("still-authenticated");
   });
 
   it("uploads a song source as multipart to the song's source endpoint", async () => {

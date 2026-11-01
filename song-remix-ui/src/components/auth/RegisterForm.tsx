@@ -7,11 +7,13 @@ export function RegisterForm() {
   const [email, setEmail] = useState("");
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
+  const [inviteCode, setInviteCode] = useState("");
   const register = useRegister();
 
   const handleSubmit = (e: FormEvent) => {
     e.preventDefault();
-    register.mutate({ email, username, password });
+    const trimmedInviteCode = inviteCode.trim();
+    register.mutate({ email, username, password, ...(trimmedInviteCode ? { invite_code: trimmedInviteCode } : {}) });
   };
 
   return (
@@ -68,11 +70,28 @@ export function RegisterForm() {
               id="password"
               type="password"
               required
-              minLength={6}
+              minLength={8}
+              aria-describedby="password-hint"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               className="w-full px-3 py-2.5 bg-surface-1 border border-surface-3 rounded-lg text-sm focus:border-brand focus:ring-1 focus:ring-brand outline-none transition-colors"
               placeholder="••••••••"
+            />
+            <p id="password-hint" className="text-xs text-text-muted mt-1.5">
+              At least 8 characters.
+            </p>
+          </div>
+          <div>
+            <label htmlFor="invite-code" className="block text-sm font-medium mb-1.5">
+              Invite code (if required)
+            </label>
+            <input
+              id="invite-code"
+              type="text"
+              autoComplete="off"
+              value={inviteCode}
+              onChange={(e) => setInviteCode(e.target.value)}
+              className="w-full px-3 py-2.5 bg-surface-1 border border-surface-3 rounded-lg text-sm focus:border-brand focus:ring-1 focus:ring-brand outline-none transition-colors"
             />
           </div>
 

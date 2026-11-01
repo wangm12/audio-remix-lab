@@ -9,6 +9,7 @@ import type {
 } from "./types";
 
 const BASE = "/api";
+const AUTH_FORM_PATHS = new Set(["/auth/login", "/auth/register"]);
 
 async function request<T>(
   path: string,
@@ -28,9 +29,13 @@ async function request<T>(
   const res = await fetch(`${BASE}${path}`, { ...options, headers });
 
   if (res.status === 401) {
-    clearToken();
-    window.location.href = "/login";
-    throw new Error("Unauthorized");
+    if (!AUTH_FORM_PATHS.has(path)) {
+      clearToken();
+      window.location.href = "/login";
+    } else {
+      const body = await res.json().catch(() => ({}));
+      throw new Error(body.detail || "Invalid credentials");
+    }
   }
   if (res.status === 204) return undefined as T;
   if (!res.ok) {
@@ -46,6 +51,7 @@ export const api = {
       email: string;
       username: string;
       password: string;
+      invite_code?: string;
     }) =>
       request<{ access_token: string }>("/auth/register", {
         method: "POST",

@@ -15,6 +15,9 @@ class Settings(BaseSettings):
     CORS_ORIGINS: str = "http://localhost:5173,http://127.0.0.1:5173"
 
     COOKIE_SECURE: bool = False
+    REGISTRATION_INVITE_CODE: str = ""
+    LOGIN_RATE_LIMIT_ATTEMPTS: int = 10
+    LOGIN_RATE_LIMIT_WINDOW_SECONDS: int = 300
 
     MAX_UPLOAD_MB: int = 128
     MAX_SOURCE_DURATION_SECONDS: float = 600.0

@@ -7,6 +7,7 @@ from app.config import settings
 
 ACCESS_SCOPE = "access"
 MEDIA_SCOPE = "media"
+BCRYPT_MAX_PASSWORD_BYTES = 72
 
 
 def hash_password(password: str) -> str:
@@ -14,7 +15,10 @@ def hash_password(password: str) -> str:
 
 
 def verify_password(plain: str, hashed: str) -> bool:
-    return bcrypt.checkpw(plain.encode("utf-8"), hashed.encode("utf-8"))
+    password = plain.encode("utf-8")
+    if len(password) > BCRYPT_MAX_PASSWORD_BYTES:
+        return False
+    return bcrypt.checkpw(password, hashed.encode("utf-8"))
 
 
 def create_access_token(subject: str, expires_delta: timedelta | None = None, scope: str = ACCESS_SCOPE) -> str:
