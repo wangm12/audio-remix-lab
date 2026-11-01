@@ -1,4 +1,7 @@
 import secrets
+import asyncio
+from contextlib import asynccontextmanager
+from collections.abc import AsyncIterator
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -15,6 +18,30 @@ from app.services.auth_service import authenticate_user, create_token_for_user, 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
 MEDIA_COOKIE_PATH = "/api"
+
+_login_locks_guard = asyncio.Lock()
+_login_locks: dict[str, tuple[asyncio.Lock, int]] = {}
+
+
+@asynccontextmanager
+async def _serialized_login(key: str) -> AsyncIterator[None]:
+    async with _login_locks_guard:
+        lock, users = _login_locks.get(key, (asyncio.Lock(), 0))
+        _login_locks[key] = (lock, users + 1)
+    acquired = False
+    try:
+        await lock.acquire()
+        acquired = True
+        yield
+    finally:
+        if acquired:
+            lock.release()
+        async with _login_locks_guard:
+            lock, users = _login_locks[key]
+            if users == 1:
+                del _login_locks[key]
+            else:
+                _login_locks[key] = (lock, users - 1)
 
 
 def set_media_cookie(response: Response, user: User) -> None:
@@ -50,21 +77,21 @@ async def register(req: RegisterRequest, response: Response, db: AsyncSession = 
 @router.post("/login", response_model=TokenResponse)
 async def login(req: LoginRequest, request: Request, response: Response, db: AsyncSession = Depends(get_db)):
     key = _client_key(request)
-    retry_after = login_rate_limiter.retry_after(key)
-    if retry_after:
-        raise HTTPException(
-            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-            detail="Too many failed login attempts; try again later",
-            headers={"Retry-After": str(retry_after)},
-        )
-    # Reserve the slot before awaiting authentication, bounding same-IP concurrency.
-    login_rate_limiter.hit(key)
-    user = await authenticate_user(db, req.email, req.password)
-    if user is None:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
-    login_rate_limiter.reset(key)
-    set_media_cookie(response, user)
-    return TokenResponse(access_token=create_token_for_user(user))
+    async with _serialized_login(key):
+        retry_after = login_rate_limiter.retry_after(key)
+        if retry_after:
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail="Too many failed login attempts; try again later",
+                headers={"Retry-After": str(retry_after)},
+            )
+        user = await authenticate_user(db, req.email, req.password)
+        if user is None:
+            login_rate_limiter.hit(key)
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
+        login_rate_limiter.reset(key)
+        set_media_cookie(response, user)
+        return TokenResponse(access_token=create_token_for_user(user))
 
 
 @router.post("/logout", status_code=status.HTTP_204_NO_CONTENT)

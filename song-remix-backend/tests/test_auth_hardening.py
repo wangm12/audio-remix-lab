@@ -3,6 +3,7 @@ import asyncio
 import httpx
 import pytest
 
+import app.api.auth as auth_api
 from app.config import settings
 from app.core.rate_limit import SlidingWindowLimiter, login_rate_limiter
 from app.core.security import verify_password
@@ -85,3 +86,47 @@ async def test_concurrent_failed_logins_cannot_exceed_limit(client, monkeypatch)
     responses = await asyncio.gather(*(client.post("/api/auth/login", json=bad) for _ in range(12)))
     assert sum(response.status_code == 401 for response in responses) == 3
     assert sum(response.status_code == 429 for response in responses) == 9
+
+
+async def test_cancelled_authentications_do_not_count_as_failed_logins(client, monkeypatch):
+    monkeypatch.setattr(login_rate_limiter, "max_events", 3)
+    await register_user(client)
+    original_authenticate = auth_api.authenticate_user
+    entered = asyncio.Event()
+
+    async def cancelled_authenticate(*args):
+        entered.set()
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(auth_api, "authenticate_user", cancelled_authenticate)
+    body = {"email": "alice@example.com", "password": DEFAULT_PASSWORD}
+    for _ in range(3):
+        entered.clear()
+        request = asyncio.create_task(client.post("/api/auth/login", json=body))
+        await entered.wait()
+        request.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await request
+
+    monkeypatch.setattr(auth_api, "authenticate_user", original_authenticate)
+    response = await client.post("/api/auth/login", json=body)
+    assert response.status_code == 200
+
+
+async def test_authentication_exceptions_do_not_count_as_failed_logins(client, monkeypatch):
+    monkeypatch.setattr(login_rate_limiter, "max_events", 3)
+    await register_user(client)
+    original_authenticate = auth_api.authenticate_user
+
+    async def failed_authentication(*args):
+        raise RuntimeError("authentication backend unavailable")
+
+    monkeypatch.setattr(auth_api, "authenticate_user", failed_authentication)
+    body = {"email": "alice@example.com", "password": DEFAULT_PASSWORD}
+    for _ in range(3):
+        with pytest.raises(RuntimeError, match="authentication backend unavailable"):
+            await client.post("/api/auth/login", json=body)
+
+    monkeypatch.setattr(auth_api, "authenticate_user", original_authenticate)
+    response = await client.post("/api/auth/login", json=body)
+    assert response.status_code == 200
