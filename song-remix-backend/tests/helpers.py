@@ -18,6 +18,9 @@ import asyncpg
 import httpx
 from sqlalchemy.engine import make_url
 
+from tests._env import TEST_DATABASE_URL
+from tests._isolation import assert_application_database_is_test
+
 BACKEND_DIR = Path(__file__).resolve().parents[1]
 REPO_ROOT = BACKEND_DIR.parent
 DEFAULT_PASSWORD = "correct-horse-battery"
@@ -149,9 +152,10 @@ async def insert_task(
     output_audio_path: str | None = None,
     created_at: datetime | None = None,
 ) -> str:
-    from app.database import async_session
+    from app.database import async_session, engine
     from app.models.task import GenerationTask
 
+    assert_application_database_is_test(engine.url, TEST_DATABASE_URL)
     async with async_session() as session:
         task = GenerationTask(
             song_id=UUID(song_id),
@@ -204,9 +208,10 @@ def convert_audio(source: Path, destination: Path) -> Path:
 
 
 async def set_task_status(task_id: str, status: str) -> None:
-    from app.database import async_session
+    from app.database import async_session, engine
     from app.models.task import GenerationTask
 
+    assert_application_database_is_test(engine.url, TEST_DATABASE_URL)
     async with async_session() as session:
         task = await session.get(GenerationTask, UUID(task_id))
         assert task is not None
