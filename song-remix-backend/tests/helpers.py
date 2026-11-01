@@ -153,3 +153,23 @@ def make_dry_run(target: str, *flags: str, **variables: str) -> str:
     result = subprocess.run(args, cwd=REPO_ROOT, env=make_environment(), capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
     return result.stdout
+
+
+def write_sine_wav(path: Path, seconds: float = 1.0, sample_rate: int = 8000, frequency: float = 440.0) -> Path:
+    import math
+    import struct
+    import wave
+
+    frames = int(seconds * sample_rate)
+    samples = (int(12000 * math.sin(2 * math.pi * frequency * i / sample_rate)) for i in range(frames))
+    with wave.open(str(path), "wb") as wav:
+        wav.setnchannels(1)
+        wav.setsampwidth(2)
+        wav.setframerate(sample_rate)
+        wav.writeframes(b"".join(struct.pack("<h", sample) for sample in samples))
+    return path
+
+
+def convert_audio(source: Path, destination: Path) -> Path:
+    subprocess.run(["ffmpeg", "-y", "-v", "error", "-i", str(source), str(destination)], check=True)
+    return destination
