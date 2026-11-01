@@ -5,10 +5,12 @@ FRONTEND_DIR := song-remix-ui
 BACKEND_DIR := song-remix-backend
 BACKEND_VENV := $(BACKEND_DIR)/.venv
 BACKEND_PIP := $(BACKEND_VENV)/bin/pip
+PYTHON ?= python3.12
 
-LOAD_ENV := set -a; [ -f .env ] && source .env; set +a
+ENV_FILE ?= .env
+LOAD_ENV := set -a; [ -f $(ENV_FILE) ] && source $(ENV_FILE); set +a
 
-.PHONY: help env install install-backend install-frontend postgres db-wait migrate seed backend frontend dev up down logs build lint status
+.PHONY: help env install install-backend install-frontend postgres db-wait migrate seed backend frontend dev up down logs build lint test test-backend test-frontend status
 
 help: ## Show available commands.
 	@awk 'BEGIN {FS = ":.*##"; printf "\nUsage:\n  make <target>\n\nTargets:\n"} /^[a-zA-Z0-9_-]+:.*##/ {printf "  %-18s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -24,13 +26,13 @@ env: ## Create .env from .env.example if missing.
 install: install-backend install-frontend ## Install backend and frontend dependencies.
 
 $(BACKEND_VENV)/bin/python:
-	python3 -m venv $(BACKEND_VENV)
+	$(PYTHON) -m venv $(BACKEND_VENV)
 
-$(BACKEND_VENV)/.requirements-installed: $(BACKEND_DIR)/requirements.txt $(BACKEND_VENV)/bin/python
-	$(BACKEND_PIP) install -r $(BACKEND_DIR)/requirements.txt
+$(BACKEND_VENV)/.requirements-installed: $(BACKEND_DIR)/requirements.lock $(BACKEND_VENV)/bin/python
+	$(BACKEND_PIP) install -r $(BACKEND_DIR)/requirements.lock
 	@touch $@
 
-install-backend: $(BACKEND_VENV)/.requirements-installed ## Install backend Python dependencies.
+install-backend: $(BACKEND_VENV)/.requirements-installed ## Install backend Python dependencies from requirements.lock.
 
 $(FRONTEND_DIR)/node_modules/.package-lock.json: $(FRONTEND_DIR)/package.json $(FRONTEND_DIR)/package-lock.json
 	cd $(FRONTEND_DIR) && npm install
@@ -88,6 +90,14 @@ build: install-frontend ## Build the frontend.
 
 lint: install-frontend ## Run frontend lint.
 	cd $(FRONTEND_DIR) && npm run lint
+
+test-backend: install-backend db-wait ## Run backend lint and tests (needs PostgreSQL).
+	cd $(BACKEND_DIR) && .venv/bin/ruff check . && .venv/bin/pytest -q
+
+test-frontend: install-frontend ## Run frontend tests, lint, and build.
+	cd $(FRONTEND_DIR) && npm test && npm run lint && npm run build
+
+test: test-backend test-frontend ## Run every backend and frontend check.
 
 status: ## Show git and Docker Compose status.
 	git status --short --branch

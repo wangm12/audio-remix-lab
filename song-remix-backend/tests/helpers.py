@@ -137,3 +137,19 @@ async def create_song(client: httpx.AsyncClient, user: AuthedUser, title: str = 
     response = await client.post("/api/songs", json={"title": title}, headers=user.headers)
     assert response.status_code == 201, response.text
     return response.json()
+
+
+def make_environment(**overrides: str) -> dict[str, str]:
+    """Environment for `make` subprocesses: drop parent-make state and host-specific overrides."""
+    dropped = {"MAKEFLAGS", "MAKELEVEL", "MFLAGS", "ENV_FILE", "HOST", "ACESTEP_MODEL", "ACESTEP_LM_MODEL", "ACESTEP_PORT"}
+    env = {key: value for key, value in os.environ.items() if key not in dropped}
+    env.update(overrides)
+    return env
+
+
+def make_dry_run(target: str, *flags: str, **variables: str) -> str:
+    variables.setdefault("ENV_FILE", "/nonexistent/.env")
+    args = ["make", "-n", *flags, target, *(f"{key}={value}" for key, value in variables.items())]
+    result = subprocess.run(args, cwd=REPO_ROOT, env=make_environment(), capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    return result.stdout
