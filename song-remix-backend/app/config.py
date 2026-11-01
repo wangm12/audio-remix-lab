@@ -21,6 +21,7 @@ class Settings(BaseSettings):
 
     MAX_UPLOAD_MB: int = 128
     MAX_SOURCE_DURATION_SECONDS: float = 600.0
+    FRONTEND_DIST: str = ""
 
     ACESTEP_ENABLED: bool = True
     ACESTEP_API_BASE: str = "http://localhost:8001"

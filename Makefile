@@ -10,8 +10,11 @@ PYTHON ?= python3.12
 # ENV_FILE configures Make targets; Docker Compose continues to load its root .env.
 ENV_FILE ?= .env
 LOAD_ENV := set -a; [ -f $(ENV_FILE) ] && source $(ENV_FILE); set +a
+env_value = $(shell [ -f "$(ENV_FILE)" ] && sed -n 's/^$(1)=//p' "$(ENV_FILE)" | tail -n 1)
 
-.PHONY: help env install install-backend install-frontend postgres db-wait migrate seed backend frontend dev up down logs build lint test test-backend test-frontend status
+HOST ?= $(or $(call env_value,HOST),127.0.0.1)
+
+.PHONY: help env install install-backend install-frontend postgres db-wait migrate seed backend frontend dev serve up down logs build lint test test-backend test-frontend status
 
 help: ## Show available commands.
 	@awk 'BEGIN {FS = ":.*##"; printf "\nUsage:\n  make <target>\n\nTargets:\n"} /^[a-zA-Z0-9_-]+:.*##/ {printf "  %-18s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -64,27 +67,31 @@ migrate: env install-backend db-wait ## Run backend database migrations.
 seed: env install-backend migrate ## Seed built-in style presets.
 	$(LOAD_ENV); cd $(BACKEND_DIR) && .venv/bin/python seed_presets.py
 
-backend: env install-backend migrate ## Start the FastAPI backend on http://localhost:8000.
-	$(LOAD_ENV); cd $(BACKEND_DIR) && .venv/bin/uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+backend: env install-backend migrate ## Start the FastAPI backend with reload on port 8000.
+	$(LOAD_ENV); cd $(BACKEND_DIR) && .venv/bin/uvicorn app.main:app --reload --host $(HOST) --port 8000
 
-frontend: install-frontend ## Start the Vite frontend on http://localhost:5173.
-	cd $(FRONTEND_DIR) && npm run dev -- --host 0.0.0.0
+frontend: install-frontend ## Start the Vite dev server on port 5173.
+	cd $(FRONTEND_DIR) && npm run dev -- --host $(HOST)
 
 dev: env install db-wait migrate ## Start PostgreSQL, backend, and frontend together.
 	@echo "Starting Song Remix Studio..."
-	@echo "Frontend: http://localhost:5173"
-	@echo "Backend:  http://localhost:8000"
+	@echo "Frontend: http://$(HOST):5173"
+	@echo "Backend:  http://$(HOST):8000"
 	@backend_pid=; frontend_pid=; \
 	cleanup() { \
 		[ -n "$$backend_pid" ] && kill "$$backend_pid" 2>/dev/null || true; \
 		[ -n "$$frontend_pid" ] && kill "$$frontend_pid" 2>/dev/null || true; \
 	}; \
 	trap cleanup INT TERM EXIT; \
-	($(LOAD_ENV); cd $(BACKEND_DIR) && .venv/bin/uvicorn app.main:app --reload --host 0.0.0.0 --port 8000) & \
+	($(LOAD_ENV); cd $(BACKEND_DIR) && .venv/bin/uvicorn app.main:app --reload --host $(HOST) --port 8000) & \
 	backend_pid=$$!; \
-	(cd $(FRONTEND_DIR) && npm run dev -- --host 0.0.0.0) & \
+	(cd $(FRONTEND_DIR) && npm run dev -- --host $(HOST)) & \
 	frontend_pid=$$!; \
 	wait
+
+serve: env install migrate ## Build the UI and serve UI + API from FastAPI on port 8000 (no reload).
+	cd $(FRONTEND_DIR) && npm run build
+	$(LOAD_ENV); cd $(BACKEND_DIR) && FRONTEND_DIST=$(CURDIR)/$(FRONTEND_DIR)/dist .venv/bin/uvicorn app.main:app --host $(HOST) --port 8000
 
 up: dev ## Alias for make dev.
 
