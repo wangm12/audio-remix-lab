@@ -57,6 +57,7 @@ export const api = {
         body: JSON.stringify(data),
       }),
     me: () => request<User>("/auth/me"),
+    logout: () => request<void>("/auth/logout", { method: "POST" }),
   },
 
   songs: {

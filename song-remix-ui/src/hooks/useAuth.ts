@@ -41,7 +41,12 @@ export function useRegister() {
 export function useLogout() {
   const qc = useQueryClient();
   const navigate = useNavigate();
-  return () => {
+  return async () => {
+    try {
+      await api.auth.logout();
+    } catch {
+      // The media cookie expires on its own; local logout must still happen.
+    }
     clearToken();
     qc.clear();
     navigate({ to: "/login" });

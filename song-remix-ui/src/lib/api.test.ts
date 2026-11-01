@@ -39,4 +39,16 @@ describe("api request helper", () => {
     expect(song.has_source).toBe(true);
     expect(contentType).toMatch(/^multipart\/form-data; boundary=/);
   });
+
+  it("logs out through the API so the media cookie is cleared", async () => {
+    let calls = 0;
+    server.use(
+      http.post("/api/auth/logout", () => {
+        calls += 1;
+        return new HttpResponse(null, { status: 204 });
+      }),
+    );
+    await expect(api.auth.logout()).resolves.toBeUndefined();
+    expect(calls).toBe(1);
+  });
 });

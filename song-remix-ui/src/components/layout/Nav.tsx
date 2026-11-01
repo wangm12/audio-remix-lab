@@ -57,7 +57,7 @@ export function Nav() {
           <button
             onClick={() => {
               setMobileOpen(false);
-              logout();
+              void logout();
             }}
             className="flex items-center gap-3 px-3 py-2 rounded-lg text-sm text-text-secondary hover:text-error hover:bg-surface-2 w-full transition-colors"
             aria-label="Log out"
