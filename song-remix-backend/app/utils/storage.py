@@ -45,6 +45,12 @@ def song_source_key(user_id: uuid.UUID | str, song_id: uuid.UUID | str, extensio
     return f"{song_prefix(user_id, song_id)}/source.{extension}"
 
 
+def versioned_song_source_key(user_id: uuid.UUID | str, song_id: uuid.UUID | str, extension: str) -> str:
+    if extension not in ALLOWED_SOURCE_EXTENSIONS:
+        raise InvalidStorageKey(f"Unsupported source extension: {extension!r}")
+    return f"{song_prefix(user_id, song_id)}/source-{uuid.uuid4().hex}.{extension}"
+
+
 def _partial_path(path: Path) -> Path:
     return path.with_name(f"{path.name}.{uuid.uuid4().hex}.part")
 
@@ -106,4 +112,3 @@ def delete_legacy_file(path: str | None) -> None:
     candidate = legacy_file_path(path)
     if candidate is not None:
         candidate.unlink(missing_ok=True)
-

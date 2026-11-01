@@ -1,4 +1,6 @@
 import tempfile
+import shutil
+import logging
 from pathlib import Path
 from uuid import UUID
 
@@ -10,8 +12,9 @@ from sqlalchemy.orm import selectinload
 
 from app.config import settings
 from app.core.deps import get_current_user
-from app.database import get_db
+from app.database import async_session, get_db
 from app.models.song import Song
+from app.models.task import GenerationTask
 from app.models.user import User
 from app.schemas.song import (
     SongCreate,
@@ -23,6 +26,7 @@ from app.schemas.song import (
     StructureLyricsResponse,
 )
 from app.services.vocal_detect import detect_interludes, insert_interlude_markers
+from app.services.song_lifecycle import has_nonterminal_tasks, lock_owned_song
 from app.utils.audio_probe import AudioProbeError, probe_audio
 from app.utils.storage import (
     delete_key,
@@ -30,8 +34,8 @@ from app.utils.storage import (
     delete_prefix,
     resolve_key,
     song_prefix,
-    song_source_key,
     store_file,
+    versioned_song_source_key,
 )
 
 router = APIRouter(prefix="/api/songs", tags=["songs"])
@@ -92,11 +96,12 @@ async def update_song(
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    song = await _get_owned_song(db, song_id, user)
+    song = await lock_owned_song(db, song_id, user.id)
+    if song is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Song not found")
     for field, value in req.model_dump(exclude_unset=True).items():
         setattr(song, field, value)
     await db.commit()
-    await db.refresh(song)
     return song
 
 
@@ -106,9 +111,17 @@ async def delete_song(
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    song = await _get_owned_song(db, song_id, user, with_tasks=True)
+    song = await lock_owned_song(db, song_id, user.id)
+    if song is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Song not found")
+    if await has_nonterminal_tasks(db, song_id):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="This song has running generations. Delete it after they finish.",
+        )
     source_key = song.source_audio_key
-    legacy_outputs = [task.output_audio_path for task in song.tasks]
+    task_result = await db.execute(select(GenerationTask.output_audio_path).where(GenerationTask.song_id == song_id))
+    legacy_outputs = list(task_result.scalars())
     prefix = song_prefix(user.id, song.id)
     await db.delete(song)
     await db.commit()
@@ -151,15 +164,38 @@ async def upload_source(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=f"Audio is longer than {settings.MAX_SOURCE_DURATION_SECONDS:.0f} seconds",
             )
-        new_key = song_source_key(user.id, song.id, probe.extension)
-        await run_in_threadpool(store_file, new_key, incoming)
-
-    old_key = song.source_audio_key
-    song.source_audio_key = new_key
-    await db.commit()
-    await db.refresh(song)
-    if old_key and old_key != new_key and old_key.startswith(f"{song_prefix(user.id, song.id)}/"):
-        delete_key(old_key)
+        new_key = versioned_song_source_key(user.id, song.id, probe.extension)
+        song = await lock_owned_song(db, song_id, user.id)
+        if song is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Song not found")
+        old_key = song.source_audio_key
+        try:
+            await run_in_threadpool(store_file, new_key, incoming)
+            song.source_audio_key = new_key
+            await db.commit()
+        except BaseException:
+            await db.rollback()
+            async with async_session() as check_db:
+                check = await check_db.get(Song, song_id)
+                if check is None or check.source_audio_key != new_key:
+                    delete_key(new_key)
+            raise
+        # Cleanup follows a committed reference change and rechecks the current key
+        # while holding the same Song row lock used by later replacements.
+        try:
+            current = await lock_owned_song(db, song_id, user.id)
+            if (
+                current
+                and old_key
+                and current.source_audio_key != old_key
+                and old_key.startswith(f"{song_prefix(user.id, song_id)}/")
+            ):
+                delete_key(old_key)
+            await db.commit()
+        except Exception:
+            await db.rollback()
+            logging.getLogger(__name__).warning("Could not remove an obsolete song source after upload", exc_info=True)
+        await db.refresh(song)
     return song
 
 
@@ -173,14 +209,38 @@ async def structure_lyrics(
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    song = await _get_owned_song(db, song_id, user)
+    song = await lock_owned_song(db, song_id, user.id)
+    if song is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Song not found")
     if not song.source_audio_key:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Upload source audio before structuring lyrics",
         )
 
-    interludes, total_duration = await detect_interludes(str(resolve_key(song.source_audio_key)))
+    private_source: Path | None = None
+    try:
+        source = resolve_key(song.source_audio_key)
+        if not source.is_file():
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Source audio is not available")
+        handle = tempfile.NamedTemporaryFile(prefix="remix-structure-", suffix=source.suffix, delete=False)
+        private_source = Path(handle.name)
+        handle.close()
+        await run_in_threadpool(shutil.copyfile, source, private_source)
+    except HTTPException:
+        if private_source:
+            private_source.unlink(missing_ok=True)
+        raise
+    except Exception as e:
+        if private_source:
+            private_source.unlink(missing_ok=True)
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Source audio is not available") from e
+
+    await db.rollback()  # release the Song row lock before audio analysis
+    try:
+        interludes, total_duration = await detect_interludes(str(private_source))
+    finally:
+        private_source.unlink(missing_ok=True)
     structured = insert_interlude_markers(req.lyrics, interludes, total_duration)
 
     return StructureLyricsResponse(lyrics=structured, interludes=interludes)

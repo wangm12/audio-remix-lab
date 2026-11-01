@@ -1,4 +1,3 @@
-import asyncio
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -11,12 +10,13 @@ from app.core.deps import get_current_user, get_media_user
 from app.core.sse import task_event_generator
 from app.database import async_session, get_db
 from app.models.preset import StylePreset
-from app.models.song import Song
 from app.models.task import GenerationTask
 from app.models.user import User
 from app.schemas.task import GenerateRequest, TaskResponse
 from app.services.engine_manager import engine_manager
-from app.services.task_service import run_generation
+from app.services.task_service import start_generation
+from app.services.song_lifecycle import lock_owned_song
+from app.schemas.task import INPUT_SNAPSHOT_KEY
 from app.utils.storage import delete_legacy_file, legacy_file_path
 
 router = APIRouter(prefix="/api", tags=["tasks"])
@@ -24,7 +24,9 @@ router = APIRouter(prefix="/api", tags=["tasks"])
 
 async def _get_owned_task(db: AsyncSession, task_id: UUID, user: User) -> GenerationTask:
     result = await db.execute(
-        select(GenerationTask).where(GenerationTask.id == task_id, GenerationTask.user_id == user.id)
+        select(GenerationTask)
+        .where(GenerationTask.id == task_id, GenerationTask.user_id == user.id)
+        .execution_options(populate_existing=True)
     )
     task = result.scalar_one_or_none()
     if task is None:
@@ -39,8 +41,7 @@ async def generate(
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    song_result = await db.execute(select(Song).where(Song.id == song_id, Song.created_by == user.id))
-    song = song_result.scalar_one_or_none()
+    song = await lock_owned_song(db, song_id, user.id)
     if song is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Song not found")
 
@@ -61,8 +62,7 @@ async def generate(
 
     if req.lyrics is not None:
         song.lyrics = req.lyrics
-        await db.commit()
-        await db.refresh(song)
+    resolved_lyrics = song.lyrics
 
     style_prompt = req.style_prompt or (preset.acestep_caption if preset else None)
     task = GenerationTask(
@@ -73,12 +73,15 @@ async def generate(
         style_preset_id=req.style_preset_id,
         style_prompt=style_prompt,
         vocal_gender=req.vocal_gender,
-        engine_params=req.engine_params,
+        engine_params={
+            **(req.engine_params or {}),
+            INPUT_SNAPSHOT_KEY: {"version": 1, "lyrics": resolved_lyrics},
+        },
     )
     db.add(task)
     await db.commit()
     await db.refresh(task)
-    asyncio.get_event_loop().create_task(run_generation(task.id))
+    start_generation(task.id)
     return task
 
 
@@ -103,7 +106,16 @@ async def get_task(task_id: UUID, db: AsyncSession = Depends(get_db), user: User
 
 @router.delete("/tasks/{task_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_task(task_id: UUID, db: AsyncSession = Depends(get_db), user: User = Depends(get_current_user)):
+    found = await _get_owned_task(db, task_id, user)
+    song = await lock_owned_song(db, found.song_id, user.id)
+    if song is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Task not found")
     task = await _get_owned_task(db, task_id, user)
+    if task.status not in {"completed", "failed"}:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="This generation is still running. Delete it after it finishes.",
+        )
     output_path = task.output_audio_path
     await db.delete(task)
     await db.commit()

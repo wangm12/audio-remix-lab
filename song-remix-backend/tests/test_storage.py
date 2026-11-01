@@ -10,6 +10,7 @@ from app.utils.storage import (
     resolve_key,
     song_prefix,
     song_source_key,
+    versioned_song_source_key,
     store_file,
     write_key,
 )
@@ -45,6 +46,14 @@ def test_song_keys_follow_the_user_song_layout():
     assert song_source_key("u1", "s1", "flac") == "users/u1/songs/s1/source.flac"
     with pytest.raises(InvalidStorageKey):
         song_source_key("u1", "s1", "exe")
+
+
+def test_versioned_source_keys_are_unique_and_keep_the_song_prefix():
+    first = versioned_song_source_key("u1", "s1", "wav")
+    second = versioned_song_source_key("u1", "s1", "wav")
+    assert first != second
+    assert first.startswith("users/u1/songs/s1/")
+    assert first.endswith(".wav")
 
 
 def test_write_store_and_delete_round_trip(isolated_root, tmp_path):

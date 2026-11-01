@@ -9,6 +9,7 @@ from app.config import settings, validate_runtime_settings
 from app.frontend import mount_frontend
 from app.middleware.upload_limit import UploadLimitMiddleware
 from app.services.engine_manager import engine_manager, init_engines
+from app.services.task_service import stop_generation_runners
 
 APP_NAME = "Song Remix Studio"
 APP_VERSION = "0.1.0"
@@ -18,8 +19,13 @@ APP_VERSION = "0.1.0"
 async def lifespan(app: FastAPI):
     validate_runtime_settings(settings)
     init_engines()
-    yield
-    await engine_manager.close_all()
+    try:
+        yield
+    finally:
+        try:
+            await stop_generation_runners()
+        finally:
+            await engine_manager.close_all()
 
 
 app = FastAPI(title=APP_NAME, version=APP_VERSION, lifespan=lifespan)

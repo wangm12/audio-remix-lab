@@ -4,6 +4,8 @@ from datetime import datetime
 from pydantic import BaseModel
 from pydantic import field_serializer
 
+INPUT_SNAPSHOT_KEY = "_input_snapshot"
+
 
 class GenerateRequest(BaseModel):
     engine: str = "acestep"
@@ -34,3 +36,9 @@ class TaskResponse(BaseModel):
     @field_serializer("error_message")
     def public_error_message(self, error_message: str | None) -> str | None:
         return "Generation failed" if error_message else None
+
+    @field_serializer("engine_params")
+    def public_engine_params(self, params: dict | None) -> dict | None:
+        if params is None:
+            return None
+        return {key: value for key, value in params.items() if key != INPUT_SNAPSHOT_KEY}
