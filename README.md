@@ -173,7 +173,7 @@ Every route except register, login, logout and health needs `Authorization: Bear
 
 - **Tokens and the media cookie.** API calls authenticate with a bearer token. Logging in also sets the `remix_media` cookie (HttpOnly, SameSite=Lax, path `/api`). It is accepted only by the audio and progress-stream routes, and its token is rejected when used as a bearer token.
 - **Ownership.** Songs, generations and presets are checked against their owner; other users get 404.
-- **File paths.** Responses never contain file paths. Files live under `STORAGE_PATH/users/<user>/songs/<song>/`.
+- **File paths and media access.** API responses never contain filesystem paths. Source audio lives under `STORAGE_PATH/users/<user>/songs/<song>/`; P0 generated output files live under `STORAGE_PATH/outputs/`. API ownership checks control access to generated media.
 - **Passwords and login limits.**
   - Passwords must be between 8 characters and 72 bytes long.
   - Failed logins are limited per client IP (`LOGIN_RATE_LIMIT_ATTEMPTS` per `LOGIN_RATE_LIMIT_WINDOW_SECONDS`).

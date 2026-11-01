@@ -49,3 +49,14 @@ def test_readme_explains_storage_and_env_file_boundaries(readme):
     assert "env_file" in text
     assert "compose" in text
     assert ".cache/audio-remix-lab/acestep-checkpoints" in text
+
+
+@pytest.mark.parametrize("readme", READMES)
+def test_readme_security_notes_distinguish_sources_and_outputs(readme):
+    text = (REPO_ROOT / readme).read_text().lower()
+    security_notes = text.split("## security notes" if readme == "README.md" else "## 安全说明", 1)[1]
+    security_notes = security_notes.split("## git hygiene" if readme == "README.md" else "## git 规范", 1)[0]
+
+    assert "responses never contain filesystem paths" in security_notes or "响应里不会出现文件系统路径" in security_notes
+    assert "users/<user>/songs/<song>/" in security_notes
+    assert "outputs/" in security_notes

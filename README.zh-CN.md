@@ -173,7 +173,7 @@ uv pip compile requirements.txt requirements-dev.txt --python-version 3.12 --out
 
 - **令牌和媒体 cookie**：API 调用使用 Bearer 令牌认证。登录时还会设置 `remix_media` cookie（HttpOnly、SameSite=Lax、路径 `/api`）。只有音频和进度流接口接受这个 cookie，它里面的令牌也不能当作 Bearer 令牌使用。
 - **归属检查**：每首歌、每次生成和每个预设都会检查归属，其他用户访问会得到 404。
-- **文件路径**：响应里不会出现文件路径。文件存放在 `STORAGE_PATH/users/<user>/songs/<song>/` 下。
+- **文件路径与媒体访问**：API 响应里不会出现文件系统路径。源音频存放在 `STORAGE_PATH/users/<user>/songs/<song>/` 下；P0 生成的输出文件存放在 `STORAGE_PATH/outputs/` 下。API 会通过归属检查控制对生成媒体的访问。
 - **密码和登录限制**：
   - 密码长度在 8 个字符到 72 字节之间。
   - 登录失败次数按客户端 IP 限制（每 `LOGIN_RATE_LIMIT_WINDOW_SECONDS` 秒最多 `LOGIN_RATE_LIMIT_ATTEMPTS` 次）。
