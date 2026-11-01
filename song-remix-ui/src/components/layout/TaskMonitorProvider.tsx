@@ -243,6 +243,12 @@ export function TaskMonitorProvider({ children }: { children: ReactNode }) {
     enabled: admitted,
   });
 
+  const publishSongTasks = useCallback((song: Song) => {
+    const visibleTasks = song.tasks?.filter((task) => !tombstones.current.has(task.id));
+    for (const task of visibleTasks ?? []) track(task);
+    return visibleTasks?.map((task) => reconcile(canonical.current.get(task.id), task));
+  }, [track]);
+
   const visibleSong = useCallback((song: Song, captured?: number): Song | null => {
     if (deletedSongs.current.has(song.id)) return null;
     // Keep the older helper shape safe for callers without a captured lease;
@@ -250,13 +256,15 @@ export function TaskMonitorProvider({ children }: { children: ReactNode }) {
     if (stopped.current || (captured !== undefined && !isGenerationCurrent(captured))) {
       return captured === undefined ? { ...song, tasks: [] } : null;
     }
-    const visibleTasks = song.tasks?.filter((task) => !tombstones.current.has(task.id))
-      .map((task) => reconcile(canonical.current.get(task.id), task));
+    const visibleTasks = publishSongTasks(song);
     return { ...song, ...(visibleTasks ? { tasks: visibleTasks } : {}) };
-  }, [isGenerationCurrent]);
+  }, [isGenerationCurrent, publishSongTasks]);
   const visibleSongs = useCallback((songs: Song[], captured?: number): Song[] =>
     stopped.current || (captured !== undefined && !isGenerationCurrent(captured))
-      ? [] : songs.filter((song) => !deletedSongs.current.has(song.id)), [isGenerationCurrent]);
+      ? [] : songs.filter((song) => !deletedSongs.current.has(song.id)).map((song) => {
+        const tasks = publishSongTasks(song);
+        return { ...song, ...(tasks ? { tasks } : {}) };
+      }), [isGenerationCurrent, publishSongTasks]);
 
   const value = useMemo(() => ({ activeTasks: tasks, recoveryIds, track, publish: update,
     forgetTask, forgetSong, stopAll, captureGeneration, isGenerationCurrent, setRecovery, visibleSong, visibleSongs, registerWatcher }), [tasks, recoveryIds, track, update, forgetTask, forgetSong, stopAll, captureGeneration, isGenerationCurrent, setRecovery, visibleSong, visibleSongs, registerWatcher]);

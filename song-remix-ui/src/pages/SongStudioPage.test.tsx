@@ -1,5 +1,6 @@
 import { act, fireEvent, screen, waitFor } from "@testing-library/react";
 import { http, HttpResponse } from "msw";
+import { toast } from "sonner";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { renderApplication } from "@/test/render";
 import { server } from "@/test/server";
@@ -75,6 +76,67 @@ describe("SongStudio generation request", () => {
     expect(await screen.findByText("Remix complete!")).toBeInTheDocument();
     await waitFor(() => expect(screen.getAllByText("completed", { selector: "span" }).length).toBeGreaterThan(0));
     expect(FakeEventSource.instances[0].closed).toBe(true);
+    view.unmount();
+  });
+
+  it.each([
+    { status: "completed" as const, expectedPanel: "Remix complete!" },
+    { status: "failed" as const, expectedPanel: "Remix failed" },
+  ])("publishes an authoritative Song $status observation through the shared monitor", async ({ status, expectedPanel }) => {
+    let currentTask: Task = { ...accepted, status: "processing" };
+    const success = vi.spyOn(toast, "success").mockImplementation(() => "toast-id");
+    const error = vi.spyOn(toast, "error").mockImplementation(() => "toast-id");
+    server.use(
+      http.get("/api/auth/me", () => HttpResponse.json({ id: "user-1", email: "u@example.com", username: "user", created_at: "2026-01-01T00:00:00Z" })),
+      http.get("/api/tasks", () => HttpResponse.json([currentTask])),
+      http.get("/api/presets", () => HttpResponse.json([])),
+      http.get("/api/songs/song-1", () => HttpResponse.json({ ...song, tasks: [currentTask] })),
+    );
+    vi.stubGlobal("EventSource", FakeEventSource as unknown as typeof EventSource);
+    const view = await renderApplication(["/studio/song-1"]);
+    await screen.findByText("Remixing in progress");
+    fireEvent.click(await screen.findByRole("button", { name: /Custom/ }));
+    fireEvent.change(screen.getByLabelText("Describe the style you want"), { target: { value: "warm R&B" } });
+    await waitFor(() => expect(FakeEventSource.instances.filter((source) => !source.closed)).toHaveLength(1));
+
+    currentTask = {
+      ...currentTask,
+      status,
+      has_output: status === "completed",
+      error_message: status === "failed" ? "The engine could not finish this remix." : null,
+      completed_at: "2026-01-01T00:01:00Z",
+    };
+    await act(async () => { await view.queryClient.invalidateQueries({ queryKey: ["song", "song-1"], exact: true }); });
+
+    expect(await screen.findByText(expectedPanel)).toBeInTheDocument();
+    await waitFor(() => expect(view.queryClient.getQueryData<Task>(["task", "task-1"])?.status).toBe(status));
+    await waitFor(() => expect(view.queryClient.getQueryData<Song>(["song", "song-1"])?.tasks?.[0].status).toBe(status));
+    expect(screen.getByRole("button", { name: "Start Remix" })).toBeEnabled();
+    if (status === "completed") expect(screen.getAllByRole("button", { name: "Play" })).toHaveLength(2);
+    else expect(screen.getAllByText("The engine could not finish this remix.")).toHaveLength(2);
+    expect(FakeEventSource.instances[0].closed).toBe(true);
+    expect(status === "completed" ? success : error).toHaveBeenCalledOnce();
+
+    await act(async () => { await view.queryClient.invalidateQueries({ queryKey: ["song", "song-1"], exact: true }); });
+    expect(status === "completed" ? success : error).toHaveBeenCalledOnce();
+    view.unmount();
+  });
+
+  it("keeps initial terminal Song history quiet", async () => {
+    const success = vi.spyOn(toast, "success").mockImplementation(() => "toast-id");
+    const completed = { ...accepted, status: "completed" as const, has_output: true, completed_at: "2026-01-01T00:01:00Z" };
+    server.use(
+      http.get("/api/auth/me", () => HttpResponse.json({ id: "user-1", email: "u@example.com", username: "user", created_at: "2026-01-01T00:00:00Z" })),
+      http.get("/api/tasks", () => HttpResponse.json([])),
+      http.get("/api/presets", () => HttpResponse.json([])),
+      http.get("/api/songs/song-1", () => HttpResponse.json({ ...song, tasks: [completed] })),
+    );
+    vi.stubGlobal("EventSource", FakeEventSource as unknown as typeof EventSource);
+    const view = await renderApplication(["/studio/song-1"]);
+    expect(await screen.findByText("Remix complete!")).toBeInTheDocument();
+    expect(view.queryClient.getQueryData<Task>(["task", "task-1"])?.status).toBe("completed");
+    expect(success).not.toHaveBeenCalled();
+    expect(FakeEventSource.instances).toHaveLength(0);
     view.unmount();
   });
 });
