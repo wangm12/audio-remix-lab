@@ -1,7 +1,9 @@
-from pydantic_settings import BaseSettings
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
+    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
+
     DATABASE_URL: str = "postgresql+asyncpg://remix:remix@localhost:5432/remix_studio"
     JWT_SECRET: str = "dev-secret-change-in-production"
     JWT_ALGORITHM: str = "HS256"
@@ -13,16 +15,9 @@ class Settings(BaseSettings):
     ACESTEP_API_BASE: str = "http://localhost:8001"
     ACESTEP_MODEL: str = "acestep-v15-turbo"
 
-    SUNO_ENABLED: bool = False
-    SUNO_API_BASE: str = "http://localhost:3000"
-    SUNO_COOKIE: str = ""
-    TWOCAPTCHA_KEY: str = ""
-
     @property
     def cors_origins_list(self) -> list[str]:
         return [o.strip() for o in self.CORS_ORIGINS.split(",") if o.strip()]
-
-    model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
 
 
 settings = Settings()

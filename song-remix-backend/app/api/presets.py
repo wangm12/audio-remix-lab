@@ -36,7 +36,6 @@ async def create_preset(
         name=req.name,
         description=req.description,
         acestep_caption=req.acestep_caption,
-        suno_tags=req.suno_tags,
         category_tags=req.category_tags,
         cover_art_emoji=req.cover_art_emoji,
         is_builtin=False,

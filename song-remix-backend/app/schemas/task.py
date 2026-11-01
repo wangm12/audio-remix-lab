@@ -5,7 +5,7 @@ from pydantic import BaseModel
 
 
 class GenerateRequest(BaseModel):
-    engine: str
+    engine: str = "acestep"
     style_preset_id: UUID | None = None
     style_prompt: str | None = None
     vocal_gender: str = "auto"

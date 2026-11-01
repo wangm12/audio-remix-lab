@@ -47,10 +47,7 @@ async def generate(
         preset_result = await db.execute(select(StylePreset).where(StylePreset.id == req.style_preset_id))
         preset = preset_result.scalar_one_or_none()
         if preset:
-            if req.engine == "acestep":
-                style_prompt = style_prompt or preset.acestep_caption
-            elif req.engine == "suno":
-                style_prompt = style_prompt or preset.suno_tags
+            style_prompt = style_prompt or preset.acestep_caption
 
     task = GenerationTask(
         song_id=song.id,

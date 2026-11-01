@@ -1,7 +1,6 @@
 from app.config import settings
 from app.engines.base import AbstractEngine
 from app.engines.acestep_engine import ACEStepEngine
-from app.engines.suno_engine import SunoEngine
 
 
 class EngineManager:
@@ -37,5 +36,3 @@ engine_manager = EngineManager()
 def init_engines():
     if settings.ACESTEP_ENABLED:
         engine_manager.register(ACEStepEngine())
-    if settings.SUNO_ENABLED:
-        engine_manager.register(SunoEngine())

@@ -15,7 +15,6 @@ class StylePreset(Base):
     name: Mapped[str] = mapped_column(String(100), nullable=False)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     acestep_caption: Mapped[str | None] = mapped_column(Text, nullable=True)
-    suno_tags: Mapped[str | None] = mapped_column(Text, nullable=True)
     category_tags: Mapped[list | None] = mapped_column(JSON, nullable=True)
     cover_art_emoji: Mapped[str | None] = mapped_column(String(10), nullable=True)
     is_builtin: Mapped[bool] = mapped_column(Boolean, default=False)
