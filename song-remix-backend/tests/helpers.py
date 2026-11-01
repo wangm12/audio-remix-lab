@@ -169,7 +169,7 @@ async def insert_task(
 
 def make_environment(**overrides: str) -> dict[str, str]:
     """Environment for `make` subprocesses: drop parent-make state and host-specific overrides."""
-    dropped = {"MAKEFLAGS", "MAKELEVEL", "MFLAGS", "ENV_FILE", "HOST", "ACESTEP_MODEL", "ACESTEP_LM_MODEL", "ACESTEP_PORT"}
+    dropped = {"MAKEFLAGS", "MAKELEVEL", "MFLAGS", "ENV_FILE", "HOST", "ACESTEP_MODEL", "ACESTEP_LM_MODEL", "ACESTEP_PORT", "PYTHON"}
     env = {key: value for key, value in os.environ.items() if key not in dropped}
     env.update(overrides)
     return env

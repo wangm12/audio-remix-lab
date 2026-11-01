@@ -3,7 +3,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.config import settings
+from app.config import settings, validate_runtime_settings
 from app.middleware.upload_limit import UploadLimitMiddleware
 from app.services.engine_manager import init_engines, engine_manager
 from app.api import auth, songs, tasks, presets, engines
@@ -11,6 +11,7 @@ from app.api import auth, songs, tasks, presets, engines
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    validate_runtime_settings(settings)
     init_engines()
     yield
     await engine_manager.close_all()

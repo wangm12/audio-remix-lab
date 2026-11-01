@@ -1,11 +1,14 @@
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+INSECURE_JWT_SECRETS = frozenset({"dev-secret-change-in-production", "change-me-in-production"})
+MIN_JWT_SECRET_LENGTH = 32
+
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
     DATABASE_URL: str = "postgresql+asyncpg://remix:remix@localhost:5432/remix_studio"
-    JWT_SECRET: str = "dev-secret-change-in-production"
+    JWT_SECRET: str = ""
     JWT_ALGORITHM: str = "HS256"
     JWT_EXPIRE_MINUTES: int = 1440
     STORAGE_PATH: str = "./data"
@@ -23,6 +26,15 @@ class Settings(BaseSettings):
     @property
     def cors_origins_list(self) -> list[str]:
         return [o.strip() for o in self.CORS_ORIGINS.split(",") if o.strip()]
+
+
+def validate_runtime_settings(config: Settings) -> None:
+    secret = config.JWT_SECRET
+    if not secret or secret in INSECURE_JWT_SECRETS or len(secret) < MIN_JWT_SECRET_LENGTH:
+        raise RuntimeError(
+            f"JWT_SECRET must be a random value of at least {MIN_JWT_SECRET_LENGTH} characters. "
+            "Run `make env` to generate one in .env."
+        )
 
 
 settings = Settings()

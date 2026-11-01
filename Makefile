@@ -7,6 +7,7 @@ BACKEND_VENV := $(BACKEND_DIR)/.venv
 BACKEND_PIP := $(BACKEND_VENV)/bin/pip
 PYTHON ?= python3.12
 
+# ENV_FILE configures Make targets; Docker Compose continues to load its root .env.
 ENV_FILE ?= .env
 LOAD_ENV := set -a; [ -f $(ENV_FILE) ] && source $(ENV_FILE); set +a
 
@@ -15,12 +16,20 @@ LOAD_ENV := set -a; [ -f $(ENV_FILE) ] && source $(ENV_FILE); set +a
 help: ## Show available commands.
 	@awk 'BEGIN {FS = ":.*##"; printf "\nUsage:\n  make <target>\n\nTargets:\n"} /^[a-zA-Z0-9_-]+:.*##/ {printf "  %-18s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
 
-env: ## Create .env from .env.example if missing.
-	@if [ ! -f .env ]; then \
-		cp .env.example .env; \
-		echo "Created .env from .env.example"; \
-	else \
-		echo ".env already exists"; \
+env: ## Create $(ENV_FILE) from .env.example if missing and make sure JWT_SECRET is a random value.
+	@if [ ! -f "$(ENV_FILE)" ]; then \
+		cp .env.example "$(ENV_FILE)"; \
+		echo "Created $(ENV_FILE) from .env.example"; \
+	fi
+	@current=$$(sed -n 's/^JWT_SECRET=//p' "$(ENV_FILE)" | tail -n 1); \
+	if [ $${#current} -lt 32 ]; then \
+		new_secret=$$(python3 -c 'import secrets; print(secrets.token_urlsafe(48))'); \
+		if grep -q '^JWT_SECRET=' "$(ENV_FILE)"; then \
+			sed -i.bak "s|^JWT_SECRET=.*|JWT_SECRET=$$new_secret|" "$(ENV_FILE)" && rm -f "$(ENV_FILE).bak"; \
+		else \
+			printf '\nJWT_SECRET=%s\n' "$$new_secret" >> "$(ENV_FILE)"; \
+		fi; \
+		echo "Generated a random JWT_SECRET in $(ENV_FILE)"; \
 	fi
 
 install: install-backend install-frontend ## Install backend and frontend dependencies.
