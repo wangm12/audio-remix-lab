@@ -4,13 +4,15 @@ from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import event, select
 
+from app.database import engine
 from app.models.task import GenerationTask
 from tests.helpers import create_song, register_user
 
 
 BASE_TIME = datetime(2026, 10, 1, tzinfo=UTC)
+MAX_SIGNED_BIGINT = 2**63 - 1
 
 
 async def test_task_list_defaults_bounds_and_owner_scoped_pages(client, db):
@@ -80,3 +82,30 @@ async def test_task_list_rejects_invalid_pagination_before_endpoint_query(client
     user = await register_user(client, email="paging-invalid@example.com", username="paging-invalid")
     response = await client.get("/api/tasks", params=params, headers=user.headers)
     assert response.status_code == 422, response.text
+
+
+async def test_task_list_accepts_max_signed_bigint_offset_and_rejects_next(client):
+    user = await register_user(client, email="paging-bigint@example.com", username="paging-bigint")
+    task_selects = []
+
+    def observe_task_select(connection, cursor, statement, parameters, context, executemany):
+        if "from generation_tasks" in statement.lower():
+            task_selects.append(statement)
+
+    event.listen(engine.sync_engine, "before_cursor_execute", observe_task_select)
+    try:
+        maximum = await client.get(
+            "/api/tasks", params={"offset": str(MAX_SIGNED_BIGINT)}, headers=user.headers
+        )
+        assert maximum.status_code == 200, maximum.text
+        assert maximum.json() == []
+        assert len(task_selects) == 1
+
+        task_selects.clear()
+        beyond_maximum = await client.get(
+            "/api/tasks", params={"offset": str(MAX_SIGNED_BIGINT + 1)}, headers=user.headers
+        )
+        assert beyond_maximum.status_code == 422, beyond_maximum.text
+        assert task_selects == []
+    finally:
+        event.remove(engine.sync_engine, "before_cursor_execute", observe_task_select)
