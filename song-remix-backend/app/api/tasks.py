@@ -1,6 +1,6 @@
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import FileResponse
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -104,7 +104,10 @@ async def generate(
 
 @router.get("/tasks", response_model=list[TaskResponse])
 async def list_tasks(
-    db: AsyncSession = Depends(get_db), user: User = Depends(get_current_user), limit: int = 50, offset: int = 0
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+    limit: int = Query(default=50, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
 ):
     result = await db.execute(
         select(GenerationTask)
