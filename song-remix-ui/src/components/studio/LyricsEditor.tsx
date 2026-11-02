@@ -23,16 +23,16 @@ export function LyricsEditor({
   const textareaId = `lyrics-${songId}`;
 
   const structureMut = useMutation({
-    mutationFn: ({ lyricsText, session }: { lyricsText: string; sequence: number; session: AuthSessionLease }) =>
+    mutationFn: ({ lyricsText, session }: { lyricsText: string; sequence: number; workEpoch: number; session: AuthSessionLease }) =>
       api.songs.structureLyrics(songId, lyricsText, session),
     onSuccess: (data, variables) => {
       if (!isAuthSessionCurrent(variables.session)) return;
-      if (!draft.isCurrentIntent(variables.sequence, variables.lyricsText)) return;
-      draft.edit(data.lyrics);
+      if (!draft.isCurrentIntent(variables.sequence, variables.lyricsText, variables.workEpoch)) return;
+      draft.edit(data.lyrics, variables.workEpoch);
       toast.success("Interlude markers added — review and edit as needed");
     },
     onError: (err: Error, variables) => {
-      if (isAuthSessionCurrent(variables.session)) toast.error(err.message || "Failed to auto-structure lyrics");
+      if (isAuthSessionCurrent(variables.session) && draft.isWorkLeaseCurrent(variables.workEpoch)) toast.error(err.message || "Failed to auto-structure lyrics");
     },
   });
 
@@ -49,7 +49,7 @@ export function LyricsEditor({
       toast.error("Paste your lyrics first, then auto-structure");
       return;
     }
-    structureMut.mutate({ lyricsText: lyrics, sequence: state.sequence, session: captureAuthSession() });
+    structureMut.mutate({ lyricsText: lyrics, sequence: state.sequence, workEpoch: draft.captureWorkLease(), session: captureAuthSession() });
   };
 
   const canAutoStructure = hasSourceAudio && lyrics.trim().length > 0;

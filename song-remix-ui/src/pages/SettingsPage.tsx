@@ -1,13 +1,19 @@
+import { useEffect, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { api } from "@/lib/api";
+import { captureAuthSession, subscribeAuthIdentity } from "@/lib/auth";
 import { useUser } from "@/hooks/useAuth";
 import { CheckCircle2, XCircle } from "lucide-react";
 
 export function SettingsPage() {
+  const [sessionEpoch, setSessionEpoch] = useState(() => captureAuthSession().epoch);
+  useEffect(() => subscribeAuthIdentity(() => setSessionEpoch(captureAuthSession().epoch)), []);
   const { data: user } = useUser();
   const enginesQuery = useQuery({
     queryKey: ["engines"],
-    queryFn: api.engines.status,
+    // QueryClient is cleared on identity replacement. The state dependency
+    // updates this observer so it attaches to the fresh cache and requests B.
+    queryFn: () => { void sessionEpoch; return api.engines.status(); },
   });
   const { data: engines, isPending, isError, isFetching, refetch } = enginesQuery;
 

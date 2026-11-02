@@ -30,6 +30,149 @@ class FakeEventSource {
 afterEach(() => { vi.unstubAllGlobals(); FakeEventSource.instances = []; });
 
 describe("SongStudio generation request", () => {
+  it("keeps a generation click canceled when mutation admission resumes after 404 and recovery", async () => {
+    let missing = false;
+    let row: Song = { ...song, has_source: true };
+    let generations = 0;
+    const patches: string[] = [];
+    server.use(
+      http.get("/api/auth/me", () => HttpResponse.json({ id: "user-1", email: "u@example.com", username: "user", created_at: "2026-01-01T00:00:00Z" })),
+      http.get("/api/tasks", () => HttpResponse.json([])),
+      http.get("/api/presets", () => HttpResponse.json([])),
+      http.get("/api/songs/song-1", () => missing ? HttpResponse.json({ detail: "Not found" }, { status: 404 }) : HttpResponse.json(row)),
+      http.patch("/api/songs/song-1", async ({ request }) => {
+        const body = await request.json() as { lyrics: string };
+        patches.push(body.lyrics);
+        row = { ...row, lyrics: body.lyrics, lyrics_revision: row.lyrics_revision + 1 };
+        return HttpResponse.json(row);
+      }),
+      http.post("/api/songs/song-1/generate", async ({ request }) => {
+        generations += 1;
+        const body = await request.json() as { lyrics?: string };
+        row = { ...row, lyrics: body.lyrics ?? row.lyrics, lyrics_revision: row.lyrics_revision + 1 };
+        return HttpResponse.json({ ...accepted, lyrics_revision: row.lyrics_revision }, { status: 201 });
+      }),
+      http.get("/api/songs", () => HttpResponse.json([])),
+    );
+    vi.stubGlobal("EventSource", FakeEventSource as unknown as typeof EventSource);
+    const view = await renderApplication(["/studio/song-1"]);
+    const textbox = await screen.findByRole("textbox", { name: "Lyrics" });
+    fireEvent.click(await screen.findByRole("button", { name: /Custom/ }));
+    fireEvent.change(screen.getByLabelText("Describe the style you want"), { target: { value: "old click style" } });
+    fireEvent.change(textbox, { target: { value: "B pre404 click" } });
+
+    let releaseAdmission!: () => void;
+    let admissionStarted!: () => void;
+    const admissionGate = new Promise<void>((resolve) => { releaseAdmission = resolve; });
+    const admitted = new Promise<void>((resolve) => { admissionStarted = resolve; });
+    view.queryClient.getMutationCache().config.onMutate = async () => {
+      admissionStarted();
+      await admissionGate;
+    };
+    fireEvent.click(screen.getByRole("button", { name: "Start Remix" }));
+    await admitted;
+
+    missing = true;
+    await view.queryClient.invalidateQueries({ queryKey: ["song", "song-1"], exact: true });
+    expect(await screen.findByText("Song not found.")).toBeInTheDocument();
+    missing = false;
+    await view.queryClient.invalidateQueries({ queryKey: ["song", "song-1"], exact: true });
+    const recoveredTextbox = await screen.findByRole("textbox", { name: "Lyrics" });
+    expect(recoveredTextbox).toHaveValue("B pre404 click");
+    fireEvent.change(recoveredTextbox, { target: { value: "C deliberate recovered save" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await screen.findByText("Saved");
+    expect(row).toMatchObject({ lyrics: "C deliberate recovered save", lyrics_revision: 1 });
+
+    releaseAdmission();
+    await waitFor(() => expect(generations).toBe(0));
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    expect(patches).toEqual(["C deliberate recovered save"]);
+    expect(generations).toBe(0);
+    expect(row).toMatchObject({ lyrics: "C deliberate recovered save", lyrics_revision: 1 });
+    view.unmount();
+  });
+
+  it("fences an admitted pre404 save response after the Song is recovered", async () => {
+    let missing = false;
+    let row: Song = { ...song };
+    let releaseSave!: () => void;
+    let saveStarted!: () => void;
+    const saveGate = new Promise<void>((resolve) => { releaseSave = resolve; });
+    const started = new Promise<void>((resolve) => { saveStarted = resolve; });
+    server.use(
+      http.get("/api/auth/me", () => HttpResponse.json({ id: "user-1", email: "u@example.com", username: "user", created_at: "2026-01-01T00:00:00Z" })),
+      http.get("/api/tasks", () => HttpResponse.json([])),
+      http.get("/api/presets", () => HttpResponse.json([])),
+      http.get("/api/songs/song-1", () => missing ? HttpResponse.json({ detail: "Not found" }, { status: 404 }) : HttpResponse.json(row)),
+      http.patch("/api/songs/song-1", async ({ request }) => {
+        const body = await request.json() as { lyrics: string };
+        saveStarted();
+        await saveGate;
+        row = { ...row, lyrics: body.lyrics, lyrics_revision: row.lyrics_revision + 1 };
+        return HttpResponse.json(row);
+      }),
+      http.get("/api/songs", () => HttpResponse.json([])),
+    );
+    vi.stubGlobal("EventSource", FakeEventSource as unknown as typeof EventSource);
+    const view = await renderApplication(["/studio/song-1"]);
+    fireEvent.change(await screen.findByRole("textbox", { name: "Lyrics" }), { target: { value: "pre404 dispatched" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await started;
+    missing = true;
+    await view.queryClient.invalidateQueries({ queryKey: ["song", "song-1"], exact: true });
+    expect(await screen.findByText("Song not found.")).toBeInTheDocument();
+    missing = false;
+    await view.queryClient.invalidateQueries({ queryKey: ["song", "song-1"], exact: true });
+    expect(await screen.findByRole("textbox", { name: "Lyrics" })).toHaveValue("pre404 dispatched");
+    const owner = getLyricsDraftOwner("song-1", song.lyrics, 0);
+    const recoveredState = owner.getSnapshot();
+    const recoveredCache = view.queryClient.getQueryData(["song", "song-1"]);
+    releaseSave();
+    await waitFor(() => expect(row.lyrics_revision).toBe(1));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(owner.getSnapshot()).toEqual(recoveredState);
+    expect(view.queryClient.getQueryData(["song", "song-1"])).toEqual(recoveredCache);
+    expect(screen.queryByText("Saved")).not.toBeInTheDocument();
+    view.unmount();
+  });
+
+  it("does not apply a late pre404 auto-structure result to a recovered local draft", async () => {
+    let missing = false;
+    let releaseStructure!: () => void;
+    let structureStarted!: () => void;
+    const structureGate = new Promise<void>((resolve) => { releaseStructure = resolve; });
+    const started = new Promise<void>((resolve) => { structureStarted = resolve; });
+    server.use(
+      http.get("/api/auth/me", () => HttpResponse.json({ id: "user-1", email: "u@example.com", username: "user", created_at: "2026-01-01T00:00:00Z" })),
+      http.get("/api/tasks", () => HttpResponse.json([])),
+      http.get("/api/presets", () => HttpResponse.json([])),
+      http.get("/api/songs/song-1", () => missing ? HttpResponse.json({ detail: "Not found" }, { status: 404 }) : HttpResponse.json({ ...song, has_source: true })),
+      http.post("/api/songs/song-1/structure-lyrics", async () => {
+        structureStarted();
+        await structureGate;
+        return HttpResponse.json({ lyrics: "late old structure", interludes: [] });
+      }),
+      http.get("/api/songs", () => HttpResponse.json([])),
+    );
+    vi.stubGlobal("EventSource", FakeEventSource as unknown as typeof EventSource);
+    const view = await renderApplication(["/studio/song-1"]);
+    const textbox = await screen.findByRole("textbox", { name: "Lyrics" });
+    fireEvent.change(textbox, { target: { value: "exact recovered text" } });
+    fireEvent.click(screen.getByRole("button", { name: "Auto-structure" }));
+    await started;
+    missing = true;
+    await view.queryClient.invalidateQueries({ queryKey: ["song", "song-1"], exact: true });
+    expect(await screen.findByText("Song not found.")).toBeInTheDocument();
+    missing = false;
+    await view.queryClient.invalidateQueries({ queryKey: ["song", "song-1"], exact: true });
+    expect(await screen.findByRole("textbox", { name: "Lyrics" })).toHaveValue("exact recovered text");
+    releaseStructure();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(screen.getByRole("textbox", { name: "Lyrics" })).toHaveValue("exact recovered text");
+    view.unmount();
+  });
+
   it("retires pending lyrics work on the current Song 404 and restores the exact draft on a later 200", async () => {
     let missing = false;
     let patches = 0;

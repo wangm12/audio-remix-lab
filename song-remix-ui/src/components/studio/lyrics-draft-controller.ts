@@ -14,12 +14,13 @@ export interface LyricsDraftState {
   error: string | null;
 }
 
-type SaveJob = { kind: "save"; value: string; sequence: number; waiters: Array<() => void> };
+type SaveJob = { kind: "save"; value: string; sequence: number; workEpoch: number; waiters: Array<() => void> };
 type GenerateJob = {
   kind: "generate";
   request: GenerateRequest;
   value: string;
   sequence: number;
+  workEpoch: number;
   resolve: (task: GeneratedTask) => void;
   reject: (error: Error) => void;
 };
@@ -94,6 +95,9 @@ export class LyricsDraftOwner {
   private hasServerSnapshot: boolean;
   private retired = false;
   private missing = false;
+  // A Song 404 retires every operation admitted in the prior lifetime. This
+  // only moves forward; a later 200 must never make an old closure current.
+  private workEpoch = 0;
   private queryClient: QueryClient | undefined;
   private requiresManualRetry = false;
   private prerequisiteError: Error | undefined;
@@ -144,12 +148,20 @@ export class LyricsDraftOwner {
     return !this.retired && isAuthSessionCurrent(this.session);
   }
 
+  captureWorkLease(): number {
+    return this.workEpoch;
+  }
+
+  isWorkLeaseCurrent(workEpoch: number): boolean {
+    return workEpoch === this.workEpoch && this.isSessionCurrent;
+  }
+
   setQueryClient(client: QueryClient): void {
     this.queryClient = client;
   }
 
-  edit(value: string): void {
-    if (!this.isSessionCurrent) return;
+  edit(value: string, workEpoch = this.captureWorkLease()): void {
+    if (!this.isWorkLeaseCurrent(workEpoch)) return;
     const sequence = this.snapshot.sequence + 1;
     const sameAsServer = value === (this.snapshot.serverLyrics ?? "");
     const clean = sameAsServer && !this.isDirty && !this.active && this.jobs.length === 0;
@@ -163,12 +175,12 @@ export class LyricsDraftOwner {
     if (this.timer) clearTimeout(this.timer);
     if (!clean) this.timer = setTimeout(() => {
       this.timer = undefined;
-      void this.queueSave(this.snapshot.value, this.snapshot.sequence);
+      void this.queueSave(this.snapshot.value, this.snapshot.sequence, workEpoch);
     }, 1500);
   }
 
-  isCurrentIntent(sequence: number, value: string): boolean {
-    return this.isSessionCurrent && this.snapshot.sequence === sequence && this.snapshot.value === value;
+  isCurrentIntent(sequence: number, value: string, workEpoch = this.captureWorkLease()): boolean {
+    return this.isWorkLeaseCurrent(workEpoch) && this.snapshot.sequence === sequence && this.snapshot.value === value;
   }
 
   adoptServer(lyrics: string | null, revision: number): void {
@@ -205,18 +217,22 @@ export class LyricsDraftOwner {
   }
 
   saveNow(): void {
+    const workEpoch = this.captureWorkLease();
     if (this.timer) clearTimeout(this.timer);
     this.timer = undefined;
-    if (this.isDirty) void this.queueSave(this.snapshot.value, this.snapshot.sequence);
+    if (this.isDirty) void this.queueSave(this.snapshot.value, this.snapshot.sequence, workEpoch);
   }
 
-  generate(request: GenerateRequest): Promise<GeneratedTask> {
+  generate(request: GenerateRequest, admittedWorkEpoch = this.captureWorkLease()): Promise<GeneratedTask> {
+    if (!this.isWorkLeaseCurrent(admittedWorkEpoch)) {
+      return Promise.reject(new Error("This song changed while the remix was being submitted. Review and try again."));
+    }
     if (this.timer) clearTimeout(this.timer);
     this.timer = undefined;
     const value = request.lyrics ?? this.snapshot.value;
     const sequence = this.snapshot.sequence;
     return new Promise((resolve, reject) => {
-      this.jobs.push({ kind: "generate", request: { ...request, lyrics: value }, value, sequence, resolve, reject });
+      this.jobs.push({ kind: "generate", request: { ...request, lyrics: value }, value, sequence, workEpoch: admittedWorkEpoch, resolve, reject });
       this.update({ status: "saving", error: null });
       void this.drain();
     });
@@ -241,6 +257,7 @@ export class LyricsDraftOwner {
 
   retireForMissingSong(session: AuthSessionLease): void {
     if (this.missing || this.retired || !sameSession(session, this.session) || !isAuthSessionCurrent(session)) return;
+    this.workEpoch += 1;
     this.missing = true;
     if (this.timer) clearTimeout(this.timer);
     this.timer = undefined;
@@ -257,15 +274,16 @@ export class LyricsDraftOwner {
     for (const listener of this.listeners) listener();
   }
 
-  private async queueSave(value: string, sequence: number): Promise<void> {
+  private async queueSave(value: string, sequence: number, workEpoch: number): Promise<void> {
+    if (!this.isWorkLeaseCurrent(workEpoch)) return;
     return new Promise((resolve) => {
       const last = this.jobs[this.jobs.length - 1];
-      if (last?.kind === "save") {
+      if (last?.kind === "save" && last.workEpoch === workEpoch) {
         last.value = value;
         last.sequence = sequence;
         last.waiters.push(resolve);
       } else {
-        this.jobs.push({ kind: "save", value, sequence, waiters: [resolve] });
+        this.jobs.push({ kind: "save", value, sequence, workEpoch, waiters: [resolve] });
       }
       this.update({ status: "saving", error: null });
       void this.drain();
@@ -275,9 +293,15 @@ export class LyricsDraftOwner {
   private async drain(): Promise<void> {
     if (this.active) return;
     this.active = true;
+    const drainWorkEpoch = this.workEpoch;
     try {
       while (this.jobs.length && this.isSessionCurrent) {
         const job = this.jobs.shift()!;
+        if (!this.isWorkLeaseCurrent(job.workEpoch)) {
+          if (job.kind === "generate") job.reject(new Error("This song changed while the remix was being submitted. Review and try again."));
+          else for (const resolve of job.waiters) resolve();
+          continue;
+        }
         if (job.kind === "save") {
           const accepted = await this.runSave(job);
           if (accepted) {
@@ -293,12 +317,12 @@ export class LyricsDraftOwner {
     } finally {
       this.active = false;
       if (this.jobs.length && this.isSessionCurrent) void this.drain();
-      else if (this.snapshot.status !== "error") this.refreshStatus();
+      else if (drainWorkEpoch === this.workEpoch && this.snapshot.status !== "error") this.refreshStatus();
     }
   }
 
   private async runSave(job: SaveJob): Promise<boolean> {
-    if (!this.isSessionCurrent) return false;
+    if (!this.isWorkLeaseCurrent(job.workEpoch)) return false;
     if (job.sequence < this.snapshot.sequence) {
       for (const resolve of job.waiters) resolve();
       return false;
@@ -311,7 +335,7 @@ export class LyricsDraftOwner {
         { lyrics: job.value, expected_lyrics_revision: baseRevision },
         this.session,
       );
-      if (!this.isSessionCurrent) return false;
+      if (!this.isWorkLeaseCurrent(job.workEpoch)) return false;
       if (response.lyrics_revision <= baseRevision || response.lyrics !== job.value) {
         throw new Error("The server did not confirm this lyrics write. Retry before continuing.");
       }
@@ -319,10 +343,10 @@ export class LyricsDraftOwner {
       this.acknowledge(job, response);
       return true;
     } catch (firstError) {
-      if (!this.isSessionCurrent) return false;
+      if (!this.isWorkLeaseCurrent(job.workEpoch)) return false;
       try {
         const current = await api.songs.getForSession(this.songId, this.session);
-        if (!this.isSessionCurrent) return false;
+        if (!this.isWorkLeaseCurrent(job.workEpoch)) return false;
         this.reconcile(current);
         if (job.sequence >= this.snapshot.sequence && current.lyrics === job.value && current.lyrics_revision > baseRevision) {
           return true;
@@ -332,7 +356,7 @@ export class LyricsDraftOwner {
           this.requiresManualRetry = true;
           return false;
         } else if (job.sequence >= this.snapshot.sequence) {
-          if (!this.isSessionCurrent) return false;
+          if (!this.isWorkLeaseCurrent(job.workEpoch)) return false;
           // Freeze the exact retry intent at dispatch. The draft can change
           // while the request is in flight, but its response acknowledges only
           // the value and sequence actually sent.
@@ -347,7 +371,7 @@ export class LyricsDraftOwner {
             { lyrics: retryAttempt.value, expected_lyrics_revision: retryBaseRevision },
             this.session,
           );
-          if (!this.isSessionCurrent) return false;
+          if (!this.isWorkLeaseCurrent(job.workEpoch)) return false;
           if (retry.lyrics_revision <= retryBaseRevision || retry.lyrics !== retryAttempt.value) {
             throw new Error("The server did not confirm this lyrics write. Retry before continuing.");
           }
@@ -359,7 +383,7 @@ export class LyricsDraftOwner {
           return false;
         }
       } catch (retryError) {
-        if (!this.isSessionCurrent) return false;
+        if (!this.isWorkLeaseCurrent(job.workEpoch)) return false;
         this.prerequisiteError = retryError instanceof Error ? retryError : new Error("Could not save lyrics");
         this.setError(retryError, job.sequence);
         this.requiresManualRetry = true;
@@ -368,14 +392,14 @@ export class LyricsDraftOwner {
     } finally {
       if (this.runningSave === job) {
         this.runningSave = undefined;
-        if (this.isSessionCurrent) for (const resolve of job.waiters) resolve();
+        if (this.isWorkLeaseCurrent(job.workEpoch)) for (const resolve of job.waiters) resolve();
       }
     }
     return false;
   }
 
   private async runGenerate(job: GenerateJob): Promise<void> {
-    if (!this.isSessionCurrent) {
+    if (!this.isWorkLeaseCurrent(job.workEpoch)) {
       job.reject(new Error("Your session changed. Sign in again before starting a remix."));
       return;
     }
@@ -387,8 +411,8 @@ export class LyricsDraftOwner {
         { ...job.request, lyrics: job.value, expected_lyrics_revision: baseRevision },
         this.session,
       );
-      if (!this.isSessionCurrent) {
-        job.reject(new Error("Your session changed. Sign in again before starting a remix."));
+      if (!this.isWorkLeaseCurrent(job.workEpoch)) {
+        job.reject(new Error("This song changed while the remix was being submitted. Review and try again."));
         return;
       }
       if (task.lyrics_revision <= baseRevision || task.lyrics_revision < this.snapshot.revision) {
@@ -406,10 +430,10 @@ export class LyricsDraftOwner {
       this.publishLyrics(job.value, task.lyrics_revision);
       job.resolve(task);
     } catch (error) {
-      if (this.isSessionCurrent) {
+      if (this.isWorkLeaseCurrent(job.workEpoch)) {
         try {
           const current = await api.songs.getForSession(this.songId, this.session);
-          if (!this.isSessionCurrent) {
+          if (!this.isWorkLeaseCurrent(job.workEpoch)) {
             job.reject(error instanceof Error ? error : new Error("Could not start remix"));
             return;
           }
@@ -418,7 +442,7 @@ export class LyricsDraftOwner {
           // Keep the original generation failure visible; a follow-up GET is best effort.
         }
       }
-      job.reject(error instanceof Error ? error : new Error("Could not start remix"));
+      if (this.isWorkLeaseCurrent(job.workEpoch)) job.reject(error instanceof Error ? error : new Error("Could not start remix"));
     } finally {
       if (this.runningGenerate === job) this.runningGenerate = undefined;
     }

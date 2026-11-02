@@ -162,7 +162,8 @@ function SongStudio({ song, songSession }: { song: Song; songSession: AuthSessio
         <GeneratePanel
           songId={song.id}
           request={generateRequest}
-          onGenerate={(request) => lyricsDraft.generate(request)}
+          onGenerate={(request, workEpoch) => lyricsDraft.generate(request, workEpoch)}
+          captureGenerationIntent={() => lyricsDraft.captureWorkLease()}
           disabled={!hasStyle}
           initialTask={song.tasks?.find((task) => task.status === "pending" || task.status === "processing") ?? song.tasks?.[0]}
         />

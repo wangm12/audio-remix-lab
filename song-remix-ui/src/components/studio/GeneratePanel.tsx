@@ -12,7 +12,8 @@ interface GeneratePanelProps {
   request: GenerateRequest | null;
   disabled: boolean;
   initialTask?: Task;
-  onGenerate?: (request: GenerateRequest) => Promise<Task>;
+  onGenerate?: (request: GenerateRequest, workEpoch?: number) => Promise<Task>;
+  captureGenerationIntent?: () => number;
 }
 
 function ElapsedTimer() {
@@ -83,7 +84,7 @@ function ProcessingCard() {
   );
 }
 
-export function GeneratePanel({ songId, request, disabled, initialTask, onGenerate }: GeneratePanelProps) {
+export function GeneratePanel({ songId, request, disabled, initialTask, onGenerate, captureGenerationIntent }: GeneratePanelProps) {
   const [submittedTaskId, setSubmittedTaskId] = useState<string | null>(null);
   const monitor = useTaskMonitor();
   const currentTaskId = initialTask && (initialTask.status === "pending" || initialTask.status === "processing")
@@ -98,9 +99,9 @@ export function GeneratePanel({ songId, request, disabled, initialTask, onGenera
   const taskFromCache = taskQuery.data ?? null;
   const songHasActiveTask = !!songId && monitor.activeTasks.some((task) => task.song_id === songId);
   const generate = useMutation({
-    mutationFn: (requestAtClick: GenerateRequest) => {
+    mutationFn: ({ requestAtClick, workEpoch }: { requestAtClick: GenerateRequest; workEpoch?: number }) => {
       if (!songId) throw new Error("Missing song or config");
-      return onGenerate ? onGenerate(requestAtClick) : api.tasks.generate(songId, requestAtClick);
+      return onGenerate ? onGenerate(requestAtClick, workEpoch) : api.tasks.generate(songId, requestAtClick);
     },
     onMutate: () => captureAuthSession(),
     onSuccess: (task, _variables, session) => {
@@ -115,7 +116,13 @@ export function GeneratePanel({ songId, request, disabled, initialTask, onGenera
   return (
     <div className="space-y-4">
       <button
-        onClick={() => { if (request) generate.mutate(request); }}
+        onClick={() => {
+          if (!request) return;
+          // Capture before React Query's async global onMutate admission. A 404
+          // can retire this intent while that callback is still pending.
+          const workEpoch = captureGenerationIntent?.();
+          generate.mutate({ requestAtClick: request, workEpoch });
+        }}
         disabled={disabled || generate.isPending || songHasActiveTask}
         className="w-full flex items-center justify-center gap-2 py-3.5 bg-brand text-surface-0 font-semibold rounded-xl hover:bg-brand-bright transition-all disabled:opacity-50 text-base active:scale-[0.98]"
       >

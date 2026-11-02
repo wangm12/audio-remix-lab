@@ -1,8 +1,9 @@
-import { fireEvent, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, screen, waitFor } from "@testing-library/react";
 import { http, HttpResponse } from "msw";
 import { describe, expect, it } from "vitest";
 import { renderApplication } from "@/test/render";
 import { server } from "@/test/server";
+import { getToken, setToken } from "@/lib/auth";
 
 describe("truthful query states", () => {
   const user = { id: "q-user", username: "query", email: "query@example.com", created_at: "2026-01-01T00:00:00Z" };
@@ -234,6 +235,36 @@ describe("truthful query states", () => {
     await waitFor(() => expect(calls).toBe(3));
     await waitFor(() => expect(screen.queryByRole("alert")).not.toBeInTheDocument());
     expect(screen.getByLabelText("Describe the style you want")).toHaveValue("preserved prompt");
+    view.unmount();
+  });
+
+  it.each([200, 401, 503])("starts Settings engine status for a replacement owner while the prior %i is held", async (status) => {
+    let releaseA!: () => void;
+    let enteredA!: () => void;
+    const gateA = new Promise<void>((resolve) => { releaseA = resolve; });
+    const aStarted = new Promise<void>((resolve) => { enteredA = resolve; });
+    let bCalls = 0;
+    server.use(
+      http.get("/api/auth/me", () => HttpResponse.json(user)),
+      http.get("/api/tasks", () => HttpResponse.json([])),
+      http.get("/api/engines/status", async ({ request }) => {
+        if (request.headers.get("Authorization") === "Bearer owner-A") {
+          enteredA();
+          await gateA;
+          return HttpResponse.json(status === 200 ? { health: [{ engine: "A old", healthy: true }] } : { detail: "A failed" }, { status });
+        }
+        bCalls += 1;
+        return HttpResponse.json({ health: [{ engine: "B engine", healthy: true }] });
+      }),
+    );
+    const view = await renderApplication(["/settings"], "owner-A");
+    await aStarted;
+    act(() => setToken("owner-B"));
+    await waitFor(() => expect(bCalls).toBeGreaterThan(0));
+    expect(await screen.findByText("B engine")).toBeInTheDocument();
+    releaseA();
+    await waitFor(() => expect(screen.queryByText("A failed")).not.toBeInTheDocument());
+    expect(getToken()).toBe("owner-B");
     view.unmount();
   });
 });
