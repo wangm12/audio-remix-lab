@@ -1,13 +1,16 @@
 import { useState, useRef, useEffect, type FormEvent } from "react";
 import { Upload, Music2, X } from "lucide-react";
 import { api } from "@/lib/api";
-import { captureAuthSession, isAuthSessionCurrent } from "@/lib/auth";
+import { captureAuthSession, isAuthSessionCurrent, type AuthSessionLease } from "@/lib/auth";
+import type { Song } from "@/lib/types";
 
 interface SongSetupProps {
-  onSongCreated: (songId: string) => void;
+  onSongCreated: (songId: string, song: Song, session: AuthSessionLease, generation?: number) => void;
+  captureGeneration?: () => number;
+  isGenerationCurrent?: (generation: number) => boolean;
 }
 
-export function SongSetup({ onSongCreated }: SongSetupProps) {
+export function SongSetup({ onSongCreated, captureGeneration, isGenerationCurrent }: SongSetupProps) {
   const [title, setTitle] = useState("");
   const [artist, setArtist] = useState("");
   const [audioFile, setAudioFile] = useState<File | null>(null);
@@ -19,6 +22,7 @@ export function SongSetup({ onSongCreated }: SongSetupProps) {
   const submitting = useRef(false);
   const attemptId = useRef(0);
   const persistedMetadata = useRef<{ title: string; artist: string | null } | null>(null);
+  const persistedSong = useRef<Song | null>(null);
 
   useEffect(() => {
     mounted.current = true;
@@ -32,7 +36,10 @@ export function SongSetup({ onSongCreated }: SongSetupProps) {
     const attempt = ++attemptId.current;
     const submitted = { title, artist, file: audioFile };
     const submittingSession = captureAuthSession();
-    const stillSubmitting = () => mounted.current && attemptId.current === attempt && isAuthSessionCurrent(submittingSession);
+    const generation = captureGeneration?.();
+    const stillSubmitting = () => mounted.current && attemptId.current === attempt &&
+      isAuthSessionCurrent(submittingSession) &&
+      (generation === undefined || isGenerationCurrent?.(generation) === true);
     setError("");
     setUploading(true);
 
@@ -45,13 +52,14 @@ export function SongSetup({ onSongCreated }: SongSetupProps) {
         });
         if (!stillSubmitting()) return;
         songId = song.id;
+        persistedSong.current = song;
         persistedMetadata.current = { title: submitted.title, artist: submitted.artist || null };
         setCreatedSongId(song.id);
       } else {
         const lastSaved = persistedMetadata.current;
         if (!lastSaved || submitted.title !== lastSaved.title || (submitted.artist || null) !== lastSaved.artist) {
           if (!stillSubmitting()) return;
-          await api.songs.update(songId, {
+          persistedSong.current = await api.songs.update(songId, {
             title: submitted.title,
             artist: submitted.artist || null,
           }, submittingSession);
@@ -62,12 +70,12 @@ export function SongSetup({ onSongCreated }: SongSetupProps) {
 
       if (submitted.file) {
         if (!stillSubmitting()) return;
-        await api.songs.uploadSource(songId, submitted.file);
+        persistedSong.current = await api.songs.uploadSource(songId, submitted.file);
         if (!stillSubmitting()) return;
       }
 
-      if (!stillSubmitting()) return;
-      onSongCreated(songId);
+      if (!stillSubmitting() || !persistedSong.current) return;
+      onSongCreated(songId, persistedSong.current, submittingSession, generation);
     } catch (err) {
       if (stillSubmitting()) setError(err instanceof Error ? err.message : "Failed to create song");
     } finally {

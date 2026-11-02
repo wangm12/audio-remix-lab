@@ -168,14 +168,7 @@ function SongStudio({ song, songSession }: { song: Song; songSession: AuthSessio
           initialTask={song.tasks?.find((task) => task.status === "pending" || task.status === "processing") ?? song.tasks?.[0]}
         />
 
-        {song.tasks && song.tasks.length > 0 && (
-          <div>
-            <h2 className="font-display text-xl font-semibold mb-4">
-              Generation history
-            </h2>
-            <TaskTimeline tasks={song.tasks} />
-          </div>
-        )}
+        <TaskTimeline tasks={song.tasks ?? []} />
       </div>
     </div>
   );

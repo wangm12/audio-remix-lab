@@ -1,7 +1,7 @@
 import { useRef, useState, useEffect } from "react";
 import { Play, Pause, Download, Headphones } from "lucide-react";
 import { api } from "@/lib/api";
-import { registerAudioElement, useAudioPlayer } from "@/hooks/useAudioPlayer";
+import { pauseOtherAudioElements, registerAudioElement, useAudioPlayer } from "@/hooks/useAudioPlayer";
 import { captureAuthSession, isAuthSessionCurrent, subscribeAuthIdentity, type AuthSessionLease } from "@/lib/auth";
 import { NativeSeekRange } from "@/components/shared/NativeSeekRange";
 
@@ -75,6 +75,7 @@ export function ResultPlayer({ taskId, songTitle }: ResultPlayerProps) {
     if (playing) {
       audio.pause();
     } else {
+      pauseOtherAudioElements(audio);
       void Promise.resolve(audio.play()).catch(() => {
         if (isAuthSessionCurrent(owner) && audio.getAttribute("src") === audioUrl) setPlayback((current) => ({ ...current, playing: false }));
       });

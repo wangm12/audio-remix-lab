@@ -31,22 +31,7 @@ function ElapsedTimer() {
   );
 }
 
-const STEPS = [
-  "Submitting to engine…",
-  "Analyzing audio structure…",
-  "Generating R&B arrangement…",
-  "Rendering final mix…",
-];
-
-function ProcessingCard() {
-  const [stepIdx, setStepIdx] = useState(0);
-  useEffect(() => {
-    const t = setInterval(() => {
-      setStepIdx((i) => Math.min(i + 1, STEPS.length - 1));
-    }, 4000);
-    return () => clearInterval(t);
-  }, []);
-
+function ProcessingCard({ status }: { status: "pending" | "processing" }) {
   return (
     <div className="p-4 bg-surface-1 rounded-xl border border-brand/30 space-y-3 animate-fade-in-up">
       <div className="flex items-center justify-between">
@@ -55,31 +40,14 @@ function ProcessingCard() {
             <Music className="w-5 h-5 text-brand" />
             <span className="absolute -top-0.5 -right-0.5 w-2 h-2 bg-brand rounded-full animate-ping" />
           </div>
-          <span className="text-sm font-semibold">Remixing in progress</span>
+          <span className="text-sm font-semibold">{status === "pending" ? "Queued" : "Remixing in progress"}</span>
         </div>
         <ElapsedTimer />
       </div>
-      <div className="space-y-1.5">
-        {STEPS.map((label, i) => (
-          <div key={i} className="flex items-center gap-2">
-            {i < stepIdx ? (
-              <CheckCircle2 className="w-3.5 h-3.5 text-success shrink-0" />
-            ) : i === stepIdx ? (
-              <Loader2 className="w-3.5 h-3.5 text-brand animate-spin shrink-0" />
-            ) : (
-              <div className="w-3.5 h-3.5 rounded-full border border-surface-3 shrink-0" />
-            )}
-            <span
-              className={`text-xs ${i <= stepIdx ? "text-text-primary" : "text-text-muted"}`}
-            >
-              {label}
-            </span>
-          </div>
-        ))}
-      </div>
-      <p className="text-xs text-text-muted">
-        Usually takes 15–30 seconds on Apple Silicon
+      <p className="text-xs text-text-secondary" role="status">
+        {status === "pending" ? "Waiting for the engine to start…" : "The engine is processing your remix…"}
       </p>
+      <p className="text-xs text-text-muted">You can check progress in your Library.</p>
     </div>
   );
 }
@@ -131,7 +99,7 @@ export function GeneratePanel({ songId, request, disabled, initialTask, onGenera
         {isProcessing ? (
           <>
             <Loader2 className="w-5 h-5 animate-spin" />
-            Remixing…
+            {status === "pending" ? "Queued…" : "Remixing…"}
           </>
         ) : (
           <>
@@ -141,7 +109,7 @@ export function GeneratePanel({ songId, request, disabled, initialTask, onGenera
         )}
       </button>
 
-      {isProcessing && <ProcessingCard />}
+      {isProcessing && <ProcessingCard status={status as "pending" | "processing"} />}
       {currentTaskId && monitor.recoveryIds.includes(currentTaskId) && (
         <p role="status" className="text-xs text-text-secondary">Live updates interrupted. Checking task status…</p>
       )}
@@ -169,7 +137,7 @@ export function GeneratePanel({ songId, request, disabled, initialTask, onGenera
       )}
 
       {generate.isError && (
-        <p className="text-error text-sm">{generate.error.message}</p>
+        <p role="alert" className="text-error text-sm">{generate.error.message}</p>
       )}
     </div>
   );

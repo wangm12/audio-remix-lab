@@ -19,6 +19,7 @@ describe("TaskTimeline deletion feedback", () => {
     let calls = 0;
     server.use(
       http.get("/api/tasks", () => HttpResponse.json([])),
+      http.get("/api/tasks/:id", () => HttpResponse.json(task)),
       http.delete("/api/tasks/task-old", () => ++calls === 1
         ? HttpResponse.json({ detail: "Cannot delete a task while it is pending or processing." }, { status: 409 })
         : new HttpResponse(null, { status: 204 })),
@@ -36,6 +37,11 @@ describe("TaskTimeline deletion feedback", () => {
     render(<QueryClientProvider client={client}><TaskMonitorProvider><ConnectedTimeline /></TaskMonitorProvider></QueryClientProvider>);
     act(() => monitor.track(task));
     fireEvent.click(screen.getByRole("button", { name: "Delete task" }));
+    expect(screen.getByRole("button", { name: "Confirm" })).toHaveFocus();
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(screen.getByRole("button", { name: "Delete task" })).toHaveFocus();
+    fireEvent.click(screen.getByRole("button", { name: "Delete task" }));
+    expect(screen.getByRole("button", { name: "Confirm" })).toHaveFocus();
     fireEvent.click(screen.getByRole("button", { name: "Confirm" }));
     expect(await screen.findByRole("alert")).toHaveTextContent("Cannot delete a task while it is pending or processing.");
     expect(screen.getByText("processing", { selector: "span" })).toBeInTheDocument();
@@ -44,9 +50,43 @@ describe("TaskTimeline deletion feedback", () => {
     fireEvent.click(screen.getByRole("button", { name: "Confirm" }));
     await waitFor(() => expect(calls).toBe(2));
     await waitFor(() => expect(screen.getByText("No generations yet.")).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByRole("heading", { name: "Generation history" })).toHaveFocus());
     expect(client.getQueryData(["task", task.id])).toBeUndefined();
     act(() => monitor.track(task));
     expect(client.getQueryData(["song", "song-1"])).toMatchObject({ tasks: [] });
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   });
+
+  it.each(["body", "cancel"] as const)("restores Confirm after delayed 409 only when focus is still on %s", async (focusDestination) => {
+    server.use(
+      http.get("/api/tasks", () => HttpResponse.json([])),
+      http.delete("/api/tasks/task-old", async () => {
+        await new Promise((resolve) => setTimeout(resolve, 150));
+        return HttpResponse.json({ detail: "Cannot delete a task while it is pending or processing." }, { status: 409 });
+      }),
+    );
+    setToken(`timeline-delayed-${focusDestination}`);
+    render(<QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } })}><TaskMonitorProvider><TaskTimeline tasks={[task]} /></TaskMonitorProvider></QueryClientProvider>);
+
+    fireEvent.click(screen.getByRole("button", { name: "Delete task" }));
+    const confirm = screen.getByRole("button", { name: "Confirm" });
+    expect(confirm).toHaveFocus();
+    fireEvent.click(confirm);
+    await waitFor(() => expect(confirm).toBeDisabled());
+    // JSDOM does not blur a focused button when it becomes disabled; reproduce the browser blur observed in Chrome.
+    confirm.blur();
+    if (focusDestination === "body") {
+      document.body.tabIndex = -1;
+      document.body.focus();
+      expect(document.activeElement).toBe(document.body);
+    } else {
+      screen.getByRole("button", { name: "Cancel" }).focus();
+      expect(screen.getByRole("button", { name: "Cancel" })).toHaveFocus();
+    }
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("Cannot delete a task while it is pending or processing.");
+    if (focusDestination === "body") expect(confirm).toHaveFocus();
+    else expect(screen.getByRole("button", { name: "Cancel" })).toHaveFocus();
+  });
+
 });

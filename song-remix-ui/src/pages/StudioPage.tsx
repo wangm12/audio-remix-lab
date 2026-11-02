@@ -1,13 +1,18 @@
 import { useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import { SongSetup } from "@/components/studio/SongSetup";
 import { StylePicker } from "@/components/studio/StylePicker";
 import { EngineConfig } from "@/components/studio/EngineConfig";
 import { GeneratePanel } from "@/components/studio/GeneratePanel";
-import type { Preset, GenerateRequest } from "@/lib/types";
+import type { Preset, GenerateRequest, Song } from "@/lib/types";
+import { useTaskMonitor } from "@/components/layout/TaskMonitorContext";
+import { isAuthSessionCurrent, type AuthSessionLease } from "@/lib/auth";
 
 export function StudioPage() {
   const navigate = useNavigate();
+  const queryClient = useQueryClient();
+  const monitor = useTaskMonitor();
   const [step, setStep] = useState<"setup" | "configure">("setup");
   const [songId, setSongId] = useState<string | null>(null);
   const [selectedPreset, setSelectedPreset] = useState<Preset | null>(null);
@@ -16,7 +21,21 @@ export function StudioPage() {
   const [vocalGender, setVocalGender] = useState("auto");
   const [vocalLanguage, setVocalLanguage] = useState("zh");
 
-  const handleSongCreated = (id: string) => {
+  const handleSongCreated = (id: string, song: Song, session: AuthSessionLease, generation?: number) => {
+    if (generation === undefined || !monitor.isGenerationCurrent(generation) || !isAuthSessionCurrent(session)) return;
+    const visibleSong = monitor.visibleSong(song, generation);
+    if (!visibleSong || !monitor.isGenerationCurrent(generation) || !isAuthSessionCurrent(session)) return;
+    queryClient.setQueryData<Song[]>(["songs"], (songs) => {
+      if (!songs) return songs;
+      const existing = songs.find((item) => item.id === visibleSong.id);
+      if (!existing) return [visibleSong, ...songs];
+      const merged = { ...existing, ...visibleSong };
+      if (existing.lyrics_revision > visibleSong.lyrics_revision) {
+        merged.lyrics = existing.lyrics;
+        merged.lyrics_revision = existing.lyrics_revision;
+      }
+      return songs.map((item) => item.id === visibleSong.id ? merged : item);
+    });
     setSongId(id);
     setStep("configure");
     navigate({ to: "/studio/$songId", params: { songId: id } });
@@ -41,7 +60,11 @@ export function StudioPage() {
         Transform any song into a smooth R&B remix
       </p>
 
-      {step === "setup" && <SongSetup onSongCreated={handleSongCreated} />}
+      {step === "setup" && <SongSetup
+        onSongCreated={handleSongCreated}
+        captureGeneration={monitor.captureGeneration}
+        isGenerationCurrent={monitor.isGenerationCurrent}
+      />}
 
       {step === "configure" && (
         <div className="space-y-8">

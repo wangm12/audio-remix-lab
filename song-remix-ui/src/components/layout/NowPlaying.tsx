@@ -1,6 +1,6 @@
 import { useRef, useEffect, useCallback } from "react";
 import { Play, Pause, X, Music2 } from "lucide-react";
-import { registerAudioElement, releaseAudioElement, useAudioPlayer } from "@/hooks/useAudioPlayer";
+import { pauseOtherAudioElements, registerAudioElement, releaseAudioElement, useAudioPlayer } from "@/hooks/useAudioPlayer";
 import { NativeSeekRange } from "@/components/shared/NativeSeekRange";
 
 export function NowPlaying() {
@@ -20,6 +20,7 @@ export function NowPlaying() {
     const audio = audioRef.current;
     if (!audio || !trackId || !audioUrl) return;
     if (isPlaying) {
+      pauseOtherAudioElements(audio);
       const ownerTrackId = trackId;
       const ownerUrl = audioUrl;
       const ownerEpochAtPlay = ownerEpoch;
@@ -50,13 +51,19 @@ export function NowPlaying() {
       const current = useAudioPlayer.getState();
       if (current.trackId === ownerTrackId && current.audioUrl === ownerUrl && current.ownerEpoch === ownerEpochAtBind) current.pause();
     };
+    const onPause = () => {
+      const current = useAudioPlayer.getState();
+      if (current.trackId === ownerTrackId && current.audioUrl === ownerUrl && current.ownerEpoch === ownerEpochAtBind && current.isPlaying) current.pause();
+    };
     audio.addEventListener("timeupdate", onTime);
     audio.addEventListener("loadedmetadata", onDur);
     audio.addEventListener("ended", onEnd);
+    audio.addEventListener("pause", onPause);
     return () => {
       audio.removeEventListener("timeupdate", onTime);
       audio.removeEventListener("loadedmetadata", onDur);
       audio.removeEventListener("ended", onEnd);
+      audio.removeEventListener("pause", onPause);
     };
   }, [audioUrl, trackId, ownerEpoch, updateMetrics]);
 

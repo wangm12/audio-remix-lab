@@ -57,7 +57,9 @@ export function StylePicker({ selected, customPrompt, onSelect, onCustom }: Styl
         {presets?.map((preset, i) => (
           <button
             key={preset.id}
+            type="button"
             onClick={() => handlePresetClick(preset)}
+            aria-pressed={!isCustom && selected === preset.id}
             className={cn(
               "flex flex-col items-start p-4 rounded-xl border transition-all text-left animate-fade-in-up",
               !isCustom && selected === preset.id
@@ -74,7 +76,9 @@ export function StylePicker({ selected, customPrompt, onSelect, onCustom }: Styl
           </button>
         ))}
         <button
+          type="button"
           onClick={handleCustomClick}
+          aria-pressed={isCustom}
           className={cn(
             "flex flex-col items-start p-4 rounded-xl border transition-all text-left animate-fade-in-up border-dashed",
             isCustom

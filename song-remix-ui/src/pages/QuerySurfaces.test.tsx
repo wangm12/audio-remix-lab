@@ -238,6 +238,17 @@ describe("truthful query states", () => {
     view.unmount();
   });
 
+  it.each([true, false])("announces engine health as %s", async (healthy) => {
+    server.use(
+      http.get("/api/auth/me", () => HttpResponse.json(user)),
+      http.get("/api/tasks", () => HttpResponse.json([])),
+      http.get("/api/engines/status", () => HttpResponse.json({ health: [{ engine: "ACE Step", healthy }] })),
+    );
+    const view = await renderApplication(["/settings"]);
+    expect(await screen.findByText(healthy ? "Healthy" : "Unhealthy")).toBeInTheDocument();
+    view.unmount();
+  });
+
   it.each([200, 401, 503])("starts Settings engine status for a replacement owner while the prior %i is held", async (status) => {
     let releaseA!: () => void;
     let enteredA!: () => void;

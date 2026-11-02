@@ -7,6 +7,7 @@ import { server } from "@/test/server";
 import type { GeneratedTask, Song, Task } from "@/lib/types";
 import { setToken } from "@/lib/auth";
 import { getLyricsDraftOwner } from "@/components/studio/lyrics-draft-controller";
+import userEvent from "@testing-library/user-event";
 
 const song: Song = { id: "song-1", title: "Test song", artist: "Artist", lyrics: "saved lyrics",
   lyrics_revision: 0, has_source: false, created_at: "2026-01-01T00:00:00Z", tasks: [] };
@@ -30,6 +31,36 @@ class FakeEventSource {
 afterEach(() => { vi.unstubAllGlobals(); FakeEventSource.instances = []; });
 
 describe("SongStudio generation request", () => {
+  it("keeps a visible, connected history heading focused after deleting the final generation", async () => {
+    const finalTask: Task = { id: "task-final", song_id: song.id, engine: "acestep", status: "failed", style_prompt: "warm",
+      vocal_gender: "auto", engine_params: null, has_output: false, duration_seconds: null, error_message: "Failed",
+      created_at: song.created_at, started_at: null, completed_at: null };
+    let tasks = [finalTask];
+    let deleteCalls = 0;
+    server.use(
+      http.get("/api/auth/me", () => HttpResponse.json({ id: "user-1", email: "u@example.com", username: "user", created_at: song.created_at })),
+      http.get("/api/tasks", () => HttpResponse.json([])),
+      http.get("/api/presets", () => HttpResponse.json([])),
+      http.get("/api/songs/song-1", () => HttpResponse.json({ ...song, tasks })),
+      http.delete("/api/tasks/task-final", () => { deleteCalls += 1; tasks = []; return new HttpResponse(null, { status: 204 }); }),
+    );
+    const view = await renderApplication(["/studio/song-1"]);
+    await screen.findByRole("heading", { name: song.title });
+    const user = userEvent.setup();
+    const remove = await screen.findByRole("button", { name: "Delete task" });
+    remove.focus();
+    await user.keyboard("{Enter}");
+    expect(screen.getByRole("button", { name: "Confirm" })).toHaveFocus();
+    await user.keyboard("{Enter}");
+    await waitFor(() => expect(deleteCalls).toBe(1));
+    await screen.findByText("No generations yet.");
+    const historyHeading = screen.getByRole("heading", { name: "Generation history" });
+    await waitFor(() => expect(historyHeading).toHaveFocus());
+    expect(historyHeading.isConnected).toBe(true);
+    expect(historyHeading).toHaveAttribute("tabindex", "-1");
+    view.unmount();
+  });
+
   it("does not publish a generation task after its Song work lease was retired", async () => {
     let missing = false;
     let serverSong: Song = { ...song, has_source: true };
@@ -624,7 +655,7 @@ describe("SongStudio generation request", () => {
 
     releaseFirst();
     await waitFor(() => expect(generateBody).toMatchObject({ lyrics: "click snapshot B", expected_lyrics_revision: 1 }));
-    await waitFor(() => expect(screen.getByRole("button", { name: /Remixing/ })).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByRole("button", { name: /Queued/ })).toBeInTheDocument());
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
     await waitFor(() => expect(serverSong).toMatchObject({ lyrics: "later edit C", lyrics_revision: 3 }));
     expect(generateBody?.lyrics).toBe("click snapshot B");
@@ -787,14 +818,14 @@ describe("SongStudio generation request", () => {
     );
     vi.stubGlobal("EventSource", FakeEventSource as unknown as typeof EventSource);
     const view = await renderApplication(["/studio/song-1"]);
-    await screen.findByText("Remixing in progress");
+    await screen.findByText("Queued");
     await waitFor(() => expect(FakeEventSource.instances.filter((source) => !source.closed)).toHaveLength(1));
     await view.router.navigate({ to: "/library" });
     await screen.findByRole("heading", { name: "Library" });
     await screen.findByText("Test song");
     expect(FakeEventSource.instances.filter((source) => !source.closed)).toHaveLength(1);
     fireEvent.click(screen.getByRole("link", { name: /Test song/ }));
-    await screen.findByText("Remixing in progress");
+    await screen.findByText("Queued");
     expect(FakeEventSource.instances.filter((source) => !source.closed)).toHaveLength(1);
     currentTask = { ...accepted, status: "completed", has_output: true, completed_at: "2026-01-01T00:01:00Z" };
     await act(async () => { FakeEventSource.instances[0].progress({ status: "completed", has_output: true, completed_at: "2026-01-01T00:01:00Z" }); });

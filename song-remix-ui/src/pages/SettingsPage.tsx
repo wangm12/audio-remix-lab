@@ -57,9 +57,9 @@ export function SettingsPage() {
                 )}
               </div>
               {h.healthy ? (
-                <CheckCircle2 className="w-5 h-5 text-success" />
+                <span className="flex items-center gap-2 text-sm text-success"><CheckCircle2 aria-hidden="true" className="w-5 h-5" /><span>Healthy</span></span>
               ) : (
-                <XCircle className="w-5 h-5 text-error" />
+                <span className="flex items-center gap-2 text-sm text-error"><XCircle aria-hidden="true" className="w-5 h-5" /><span>Unhealthy</span></span>
               )}
             </div>
           ))}

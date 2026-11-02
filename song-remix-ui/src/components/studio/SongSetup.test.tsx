@@ -43,7 +43,7 @@ describe("SongSetup", () => {
     await user.upload(screen.getByLabelText("Source audio file"), wav());
     await user.click(screen.getByRole("button", { name: "Continue to style selection" }));
 
-    await vi.waitFor(() => expect(onSongCreated).toHaveBeenCalledWith("song-1"));
+    await vi.waitFor(() => expect(onSongCreated).toHaveBeenCalledWith("song-1", expect.objectContaining({ id: "song-1", has_source: true }), expect.any(Object), undefined));
     expect(order).toEqual(["create", "upload"]);
   });
 
@@ -73,7 +73,7 @@ describe("SongSetup", () => {
     expect(onSongCreated).not.toHaveBeenCalled();
 
     await user.click(screen.getByRole("button", { name: "Continue to style selection" }));
-    await vi.waitFor(() => expect(onSongCreated).toHaveBeenCalledWith("song-1"));
+    await vi.waitFor(() => expect(onSongCreated).toHaveBeenCalledWith("song-1", expect.objectContaining({ id: "song-1", has_source: true }), expect.any(Object), undefined));
     expect({ creates, uploads }).toEqual({ creates: 1, uploads: 2 });
   });
 
@@ -118,6 +118,7 @@ describe("SongSetup", () => {
       creates: 1, uploads: 2, saved: { title: "Latest title", artist: "Latest artist" },
       patchBodies: [{ title: "Latest title", artist: "Latest artist" }],
     });
+    expect(onSongCreated).toHaveBeenCalledWith("song-1", expect.objectContaining({ title: "Latest title", artist: "Latest artist" }), expect.any(Object), undefined);
   });
 
   it("clears a previously saved artist with an explicit null metadata patch", async () => {
@@ -261,7 +262,7 @@ describe("SongSetup", () => {
     await user.type(screen.getByLabelText("Song title"), "Rain Butterfly");
     await user.click(screen.getByRole("button", { name: "Continue to style selection" }));
 
-    await vi.waitFor(() => expect(onSongCreated).toHaveBeenCalledWith("song-1"));
+    await vi.waitFor(() => expect(onSongCreated).toHaveBeenCalledWith("song-1", expect.objectContaining({ id: "song-1", has_source: false }), expect.any(Object), undefined));
   });
 
   it("does not navigate from a SongSetup response body after unmount and identity replacement", async () => {

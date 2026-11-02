@@ -70,4 +70,48 @@ describe("NowPlaying keyboard seek", () => {
     fireEvent.timeUpdate(inlineAudio);
     expect(screen.getByRole("slider", { name: "Seek remix" })).toHaveValue("3");
   });
+
+  it("pauses the prior inline track when another inline or mini track starts", async () => {
+    setToken("exclusive-playback-owner");
+    const view = render(<><ResultPlayer taskId="track-a" /><ResultPlayer taskId="track-b" /><NowPlaying /></>);
+    const [first, second] = [...view.container.querySelectorAll("audio")];
+    const played: HTMLAudioElement[] = [];
+    const paused: HTMLAudioElement[] = [];
+    vi.spyOn(HTMLMediaElement.prototype, "play").mockImplementation(function(this: HTMLMediaElement) { played.push(this as HTMLAudioElement); return Promise.resolve(); });
+    vi.spyOn(HTMLMediaElement.prototype, "pause").mockImplementation(function(this: HTMLMediaElement) { paused.push(this as HTMLAudioElement); });
+
+    fireEvent.click(screen.getAllByRole("button", { name: "Play" })[0]);
+    expect(played).toContain(first);
+    fireEvent.click(screen.getAllByRole("button", { name: "Play" })[0]);
+    expect(paused).toContain(first);
+    expect(played).toContain(second);
+
+    fireEvent.click(screen.getAllByRole("button", { name: "Play in mini player" })[1]);
+    await waitFor(() => expect(view.container.querySelectorAll("audio")).toHaveLength(3));
+    const mini = view.container.querySelectorAll("audio")[2];
+    await waitFor(() => expect(played).toContain(mini));
+    expect(paused).toContain(second);
+  });
+
+  it("pauses mini playback when an inline track starts", async () => {
+    setToken("mini-to-inline-owner");
+    const view = render(<><ResultPlayer taskId="track-c" /><NowPlaying /></>);
+    const inline = view.container.querySelector("audio")!;
+    const played: HTMLAudioElement[] = [];
+    const paused: HTMLAudioElement[] = [];
+    vi.spyOn(HTMLMediaElement.prototype, "play").mockImplementation(function(this: HTMLMediaElement) { played.push(this as HTMLAudioElement); return Promise.resolve(); });
+    vi.spyOn(HTMLMediaElement.prototype, "pause").mockImplementation(function(this: HTMLMediaElement) { paused.push(this as HTMLAudioElement); });
+    fireEvent.click(screen.getByRole("button", { name: "Play in mini player" }));
+    await waitFor(() => expect(view.container.querySelectorAll("audio")).toHaveLength(2));
+    const mini = view.container.querySelectorAll("audio")[1];
+    await waitFor(() => expect(played).toContain(mini));
+
+    paused.length = 0;
+    fireEvent.click(screen.getByRole("button", { name: "Play" }));
+    expect(paused).toContain(mini);
+    expect(played).toContain(inline);
+    expect(paused).not.toContain(inline);
+    fireEvent.pause(mini);
+    expect(useAudioPlayer.getState().isPlaying).toBe(false);
+  });
 });

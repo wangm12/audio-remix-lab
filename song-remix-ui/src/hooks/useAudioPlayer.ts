@@ -18,6 +18,12 @@ export function registerAudioElement(audio: HTMLAudioElement): () => void {
   };
 }
 
+export function pauseOtherAudioElements(active: HTMLAudioElement) {
+  for (const audio of mediaElements) {
+    if (audio !== active) audio.pause();
+  }
+}
+
 function releaseAllMedia() {
   for (const audio of mediaElements) releaseAudioElement(audio);
 }
