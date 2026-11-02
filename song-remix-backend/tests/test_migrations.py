@@ -1,3 +1,4 @@
+import json
 import uuid
 
 import pytest
@@ -118,3 +119,57 @@ def test_source_audio_key_migration_keeps_only_legacy_upload_paths(scratch_db):
     run_alembic(scratch_db, "downgrade", "5b1d0c7e9a42")
     assert "source_audio_path" in _columns(scratch_db, "songs")
     assert fetch_sql(scratch_db, "SELECT source_audio_path FROM songs WHERE title = 'a'") == [("uploads/abc.mp3",)]
+
+
+def test_lyrics_revision_migration_preserves_legacy_song_values(scratch_db):
+    run_alembic(scratch_db, "upgrade", "7c3e2a9d4f10")
+    user_id = uuid.uuid4()
+    execute_sql(
+        scratch_db,
+        "INSERT INTO users (id, email, username, hashed_password) VALUES ($1, 'lyrics@example.com', 'lyrics', 'x')",
+        user_id,
+    )
+    songs = [(uuid.uuid4(), "null", None), (uuid.uuid4(), "empty", ""), (uuid.uuid4(), "spaces", "  \n ")]
+    for song_id, title, lyrics in songs:
+        execute_sql(
+            scratch_db,
+            "INSERT INTO songs (id, title, lyrics, source_audio_key, created_by) VALUES ($1, $2, $3, $4, $5)",
+            song_id,
+            title,
+            lyrics,
+            "uploads/retain.wav",
+            user_id,
+        )
+    task_id = uuid.uuid4()
+    execute_sql(
+        scratch_db,
+        "INSERT INTO generation_tasks "
+        "(id, song_id, user_id, engine, status, vocal_gender, engine_params, output_audio_path, retry_count) "
+        "VALUES ($1, $2, $3, 'acestep', 'completed', 'auto', "
+        "'{\"_input_snapshot\":{\"version\":1,\"lyrics\":\"snapshot\"}}', "
+        "'users/retained/output.mp3', 0)",
+        task_id,
+        songs[0][0],
+        user_id,
+    )
+
+    run_alembic(scratch_db, "upgrade", "head")
+    expected = [
+        (title, lyrics, "uploads/retain.wav", 0)
+        for _, title, lyrics in sorted(songs, key=lambda row: row[1])
+    ]
+    assert fetch_sql(
+        scratch_db,
+        "SELECT title, lyrics, source_audio_key, lyrics_revision FROM songs ORDER BY title",
+    ) == expected
+    retained_task = fetch_sql(
+        scratch_db,
+        "SELECT engine_params::text, output_audio_path FROM generation_tasks WHERE id = $1",
+        task_id,
+    )
+    assert json.loads(retained_task[0][0]) == {
+        "_input_snapshot": {"version": 1, "lyrics": "snapshot"}
+    }
+    assert retained_task[0][1] == "users/retained/output.mp3"
+    run_alembic(scratch_db, "upgrade", "head")
+    assert fetch_sql(scratch_db, "SELECT count(*) FROM songs") == [(3,)]

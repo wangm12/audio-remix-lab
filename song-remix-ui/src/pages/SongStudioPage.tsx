@@ -11,20 +11,27 @@ import { LyricsEditor } from "@/components/studio/LyricsEditor";
 import { TaskTimeline } from "@/components/library/TaskTimeline";
 import type { Preset, GenerateRequest, Song } from "@/lib/types";
 import { useTaskMonitor } from "@/components/layout/TaskMonitorContext";
+import { getSongReadSession, tagSongReadSession, useLyricsDraft } from "@/components/studio/lyrics-draft-controller";
+import { captureAuthSession, isAuthSessionCurrent, type AuthSessionLease } from "@/lib/auth";
 
 export function SongStudioPage() {
   const { songId } = useParams({ from: "/studio/$songId" });
   const monitor = useTaskMonitor();
-  const { data: song, isLoading } = useQuery({
+  const { data: songResult, isLoading } = useQuery({
     queryKey: ["song", songId],
     queryFn: async ({ signal }) => {
       const generation = monitor.captureGeneration();
       if (!monitor.isGenerationCurrent(generation)) throw new DOMException("Song request is no longer current", "AbortError");
-      const song = await api.songs.get(songId, signal);
-      if (!monitor.isGenerationCurrent(generation) || signal.aborted) throw new DOMException("Song request is no longer current", "AbortError");
-      return monitor.visibleSong(song, generation);
+      const session = captureAuthSession();
+      const song = await api.songs.getForSession(songId, session, signal);
+      if (!monitor.isGenerationCurrent(generation) || signal.aborted || !isAuthSessionCurrent(session)) {
+        throw new DOMException("Song request is no longer current", "AbortError");
+      }
+      const visible = monitor.visibleSong(song, generation);
+      return visible ? tagSongReadSession(visible, session) : null;
     },
   });
+  const song = songResult;
 
   if (isLoading) {
     return (
@@ -42,17 +49,33 @@ export function SongStudioPage() {
     );
   }
 
-  return <SongStudio key={song.id} song={song} />;
+  return <SongStudio key={song.id} song={song} songSession={getSongReadSession(song) ?? captureAuthSession()} />;
 }
 
-function SongStudio({ song }: { song: Song }) {
+function SongStudio({ song, songSession }: { song: Song; songSession: AuthSessionLease }) {
   const { track } = useTaskMonitor();
   const [selectedPreset, setSelectedPreset] = useState<Preset | null>(null);
   const [customPrompt, setCustomPrompt] = useState("");
   const [coverStrength, setCoverStrength] = useState(0.5);
   const [vocalGender, setVocalGender] = useState("auto");
   const [vocalLanguage, setVocalLanguage] = useState("zh");
-  const [lyrics, setLyrics] = useState(song.lyrics ?? "");
+  const { owner: lyricsDraft, state: lyricsState } = useLyricsDraft(
+    song.id,
+    song.lyrics,
+    song.lyrics_revision,
+    songSession,
+  );
+  const lyrics = lyricsState.value;
+
+  useEffect(() => {
+    const protectUnsavedLyrics = (event: BeforeUnloadEvent) => {
+      if (!lyricsDraft.isDirty) return;
+      event.preventDefault();
+      event.returnValue = "";
+    };
+    window.addEventListener("beforeunload", protectUnsavedLyrics);
+    return () => window.removeEventListener("beforeunload", protectUnsavedLyrics);
+  }, [lyricsDraft, lyricsState]);
   useEffect(() => {
     for (const task of song.tasks ?? []) {
       if (task.status === "pending" || task.status === "processing") track(task);
@@ -97,9 +120,8 @@ function SongStudio({ song }: { song: Song }) {
         />
         <LyricsEditor
           songId={song.id}
-          initialLyrics={song.lyrics ?? ""}
-          lyrics={lyrics}
-          onLyricsChange={setLyrics}
+          draft={lyricsDraft}
+          state={lyricsState}
           hasSourceAudio={song.has_source}
         />
         <EngineConfig
@@ -113,6 +135,7 @@ function SongStudio({ song }: { song: Song }) {
         <GeneratePanel
           songId={song.id}
           request={generateRequest}
+          onGenerate={(request) => lyricsDraft.generate(request)}
           disabled={!hasStyle}
           initialTask={song.tasks?.find((task) => task.status === "pending" || task.status === "processing") ?? song.tasks?.[0]}
         />

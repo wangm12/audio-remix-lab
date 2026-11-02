@@ -9,6 +9,7 @@ const BASE: Song = {
   title: "Rain Butterfly",
   artist: "Li Yijun",
   lyrics: null,
+  lyrics_revision: 0,
   has_source: true,
   created_at: "2026-10-31T00:00:00Z",
 };

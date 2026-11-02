@@ -84,7 +84,7 @@ describe("session lifetime in the real application router", () => {
         }]);
       }),
       http.get("/api/songs/owner-song", () => HttpResponse.json({
-        id: "owner-song", title: "Owner song", artist: null, lyrics: null, has_source: false,
+        id: "owner-song", title: "Owner song", artist: null, lyrics: null, lyrics_revision: 0, has_source: false,
         created_at: "2026-01-01T00:00:00Z", tasks: [{
           id: "owner-task", song_id: "owner-song", engine: "acestep", status: "processing",
           style_prompt: "warm", vocal_gender: "auto", engine_params: null, has_output: false,

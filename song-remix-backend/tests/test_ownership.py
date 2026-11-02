@@ -22,8 +22,10 @@ async def test_other_users_get_404_for_every_owned_resource(client):
     attempts = [
         ("GET", f"/api/songs/{song_id}", None),
         ("PATCH", f"/api/songs/{song_id}", {"title": "pwned"}),
+        ("PATCH", f"/api/songs/{song_id}", {"lyrics": "private", "expected_lyrics_revision": 999}),
         ("POST", f"/api/songs/{song_id}/structure-lyrics", {"lyrics": "la"}),
         ("POST", f"/api/songs/{song_id}/generate", {"style_prompt": "soul"}),
+        ("POST", f"/api/songs/{song_id}/generate", {"lyrics": "private", "expected_lyrics_revision": 999}),
         ("DELETE", f"/api/songs/{song_id}", None),
         ("GET", f"/api/tasks/{task_id}", None),
         ("GET", f"/api/tasks/{task_id}/audio", None),

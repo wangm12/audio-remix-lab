@@ -16,7 +16,7 @@ describe("Library song deletion feedback", () => {
     const task: Task = { id: "active-song-task", song_id: "song-1", engine: "acestep", status: "processing", style_prompt: null,
       vocal_gender: "auto", engine_params: null, has_output: false, duration_seconds: null, error_message: null,
       created_at: "2026-01-01T00:00:00Z", started_at: null, completed_at: null };
-    const song = { id: "song-1", title: "Still here", artist: null, lyrics: null,
+    const song = { id: "song-1", title: "Still here", artist: null, lyrics: null, lyrics_revision: 0,
       has_source: false, created_at: "2026-01-01T00:00:00Z", task_count: 2, latest_status: "completed" };
     let deleteCalls = 0;
     let monitor: TaskMonitorValue;

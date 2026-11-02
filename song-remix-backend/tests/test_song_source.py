@@ -6,6 +6,7 @@ from pathlib import Path
 
 import httpx
 import pytest
+from sqlalchemy import func, select
 
 from app.config import settings
 from app.middleware.upload_limit import MULTIPART_OVERHEAD_BYTES
@@ -96,6 +97,7 @@ async def test_upload_response_survives_obsolete_source_cleanup_failure(
         "title": song["title"],
         "artist": song["artist"],
         "lyrics": song["lyrics"],
+        "lyrics_revision": song["lyrics_revision"],
         "has_source": True,
         "created_at": song["created_at"],
     }
@@ -331,7 +333,8 @@ async def test_generate_snapshots_lyrics_and_hides_internal_snapshot(client, db,
     alice = await register_user(client)
     song = await create_song(client, alice)
     await client.patch(f"/api/songs/{song['id']}", json={"lyrics": "saved"}, headers=alice.headers)
-    monkeypatch.setattr("app.api.tasks.start_generation", lambda task_id: None)
+    started: list[uuid.UUID] = []
+    monkeypatch.setattr("app.api.tasks.start_generation", lambda task_id: started.append(task_id))
     monkeypatch.setattr(engine_manager, "available_engines", lambda: ["acestep"])
 
     response = await client.post(
@@ -343,6 +346,7 @@ async def test_generate_snapshots_lyrics_and_hides_internal_snapshot(client, db,
     assert response.status_code == 201, response.text
     assert "_input_snapshot" not in response.json()["engine_params"]
     task_id = uuid.UUID(response.json()["id"])
+    assert started == [task_id]
     task = await db.get(GenerationTask, task_id)
     assert task.engine_params["_input_snapshot"] == {"version": 1, "lyrics": ""}
     assert task.engine_params["_input_snapshot"]["lyrics"] == ""
@@ -366,6 +370,124 @@ async def test_generate_snapshots_lyrics_and_hides_internal_snapshot(client, db,
     assert engine.lyrics == ""
     await db.refresh(task)
     assert task.engine_params["_input_snapshot"] == {"version": 1, "lyrics": ""}
+
+
+async def test_lyrics_revision_cas_increments_explicit_noop_and_rejects_stale_write(client):
+    alice = await register_user(client)
+    song = await create_song(client, alice)
+    assert song["lyrics_revision"] == 0
+
+    first = await client.patch(
+        f"/api/songs/{song['id']}",
+        json={"lyrics": "same", "expected_lyrics_revision": 0},
+        headers=alice.headers,
+    )
+    assert first.status_code == 200, first.text
+    assert (first.json()["lyrics"], first.json()["lyrics_revision"]) == ("same", 1)
+
+    repeated = await client.patch(
+        f"/api/songs/{song['id']}",
+        json={"lyrics": "same", "expected_lyrics_revision": 1},
+        headers=alice.headers,
+    )
+    assert (repeated.json()["lyrics"], repeated.json()["lyrics_revision"]) == ("same", 2)
+
+    stale = await client.patch(
+        f"/api/songs/{song['id']}",
+        json={"lyrics": "old intent", "expected_lyrics_revision": 0},
+        headers=alice.headers,
+    )
+    assert stale.status_code == 409
+    assert "Lyrics changed" in stale.json()["detail"]
+
+    legacy = await client.patch(f"/api/songs/{song['id']}", json={"lyrics": "legacy"}, headers=alice.headers)
+    assert (legacy.json()["lyrics"], legacy.json()["lyrics_revision"]) == ("legacy", 3)
+    cleared = await client.patch(
+        f"/api/songs/{song['id']}",
+        json={"lyrics": None, "expected_lyrics_revision": 3},
+        headers=alice.headers,
+    )
+    assert (cleared.json()["lyrics"], cleared.json()["lyrics_revision"]) == (None, 4)
+    metadata = await client.patch(f"/api/songs/{song['id']}", json={"title": "Renamed"}, headers=alice.headers)
+    assert metadata.json()["lyrics_revision"] == 4
+
+
+async def test_generate_lyrics_cas_conflict_creates_no_task_and_success_returns_revision(client, db, monkeypatch):
+    alice = await register_user(client)
+    song = await create_song(client, alice)
+    saved = await client.patch(f"/api/songs/{song['id']}", json={"lyrics": "first"}, headers=alice.headers)
+    assert saved.json()["lyrics_revision"] == 1
+    started: list[uuid.UUID] = []
+    monkeypatch.setattr("app.api.tasks.start_generation", lambda task_id: started.append(task_id))
+    monkeypatch.setattr(engine_manager, "available_engines", lambda: ["acestep"])
+
+    conflict = await client.post(
+        f"/api/songs/{song['id']}/generate",
+        json={"lyrics": "stale", "expected_lyrics_revision": 0},
+        headers=alice.headers,
+    )
+    assert conflict.status_code == 409
+    assert await db.scalar(select(func.count()).select_from(GenerationTask)) == 0
+    assert started == []
+
+    created = await client.post(
+        f"/api/songs/{song['id']}/generate",
+        json={"lyrics": "", "expected_lyrics_revision": 1},
+        headers=alice.headers,
+    )
+    assert created.status_code == 201, created.text
+    assert created.json()["lyrics_revision"] == 2
+    assert started == [uuid.UUID(created.json()["id"])]
+    task = await db.get(GenerationTask, uuid.UUID(created.json()["id"]))
+    assert task.engine_params["_input_snapshot"] == {"version": 1, "lyrics": ""}
+
+
+@pytest.mark.parametrize("winning_lyrics", ["new B", "original"])
+async def test_pre_admission_stale_lyrics_write_loses_cas_even_after_aba(
+    client, winning_lyrics, monkeypatch
+):
+    alice = await register_user(client)
+    song = await create_song(client, alice)
+    base = await client.patch(
+        f"/api/songs/{song['id']}", json={"lyrics": "original"}, headers=alice.headers
+    )
+    base_revision = base.json()["lyrics_revision"]
+    original_lock = songs_api.lock_owned_song
+    delayed_entered = asyncio.Event()
+    release_delayed = asyncio.Event()
+    lock_calls = 0
+
+    async def delayed_before_lock(db_session, song_id, user_id):
+        nonlocal lock_calls
+        lock_calls += 1
+        if lock_calls == 1:
+            delayed_entered.set()
+            await release_delayed.wait()
+        return await original_lock(db_session, song_id, user_id)
+
+    monkeypatch.setattr(songs_api, "lock_owned_song", delayed_before_lock)
+    delayed = asyncio.create_task(
+        client.patch(
+            f"/api/songs/{song['id']}",
+            json={"lyrics": "old A", "expected_lyrics_revision": base_revision},
+            headers=alice.headers,
+        )
+    )
+    try:
+        await asyncio.wait_for(delayed_entered.wait(), timeout=5)
+        winner = await client.patch(
+            f"/api/songs/{song['id']}",
+            json={"lyrics": winning_lyrics, "expected_lyrics_revision": base_revision},
+            headers=alice.headers,
+        )
+        assert winner.status_code == 200, winner.text
+        assert winner.json()["lyrics_revision"] == base_revision + 1
+    finally:
+        release_delayed.set()
+    loser = await asyncio.wait_for(delayed, timeout=5)
+    assert loser.status_code == 409
+    final = await client.get(f"/api/songs/{song['id']}", headers=alice.headers)
+    assert (final.json()["lyrics"], final.json()["lyrics_revision"]) == (winning_lyrics, base_revision + 1)
 
 
 async def test_active_delete_conflicts_then_terminal_delete_removes_published_output(client, db, monkeypatch):

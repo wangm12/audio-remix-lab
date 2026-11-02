@@ -115,8 +115,23 @@ async def update_song(
     song = await lock_owned_song(db, song_id, user.id)
     if song is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Song not found")
-    for field, value in req.model_dump(exclude_unset=True).items():
+    fields = req.model_dump(exclude_unset=True)
+    lyrics_written = "lyrics" in req.model_fields_set
+    if req.expected_lyrics_revision is not None and not lyrics_written:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="expected_lyrics_revision requires an explicit lyrics value.",
+        )
+    if lyrics_written and req.expected_lyrics_revision is not None and req.expected_lyrics_revision != song.lyrics_revision:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Lyrics changed on the server. Review the latest lyrics and retry your save.",
+        )
+    fields.pop("expected_lyrics_revision", None)
+    for field, value in fields.items():
         setattr(song, field, value)
+    if lyrics_written:
+        song.lyrics_revision += 1
     await db.commit()
     return song
 

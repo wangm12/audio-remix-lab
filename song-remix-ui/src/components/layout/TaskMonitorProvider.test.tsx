@@ -278,7 +278,7 @@ describe("app-shell task monitor", () => {
     let resolveFirstSong: ((response: Response) => void) | undefined;
     let songReads = 0;
     const stale = task("late-task", "song-a", "processing");
-    const song = { id: "song-a", title: "late", artist: null, lyrics: null, has_source: false,
+    const song = { id: "song-a", title: "late", artist: null, lyrics: null, lyrics_revision: 0, has_source: false,
       created_at: "2026-01-01T00:00:00Z", tasks: [stale] } as Song;
     server.use(
       http.get("/api/tasks", () => HttpResponse.json([])),
@@ -305,7 +305,7 @@ describe("app-shell task monitor", () => {
   it("reconciles a deferred Song snapshot with the canonical terminal task", async () => {
     let finishSong: ((response: Response) => void) | undefined;
     const stale = task("active-a", "song-a", "processing");
-    const song = { id: "song-a", title: "late", artist: null, lyrics: null, has_source: false,
+    const song = { id: "song-a", title: "late", artist: null, lyrics: null, lyrics_revision: 0, has_source: false,
       created_at: "2026-01-01T00:00:00Z", tasks: [stale] } as Song;
     server.use(
       http.get("/api/tasks", () => HttpResponse.json([stale])),
@@ -330,7 +330,7 @@ describe("app-shell task monitor", () => {
     "rejects a delayed Song result after %s", async (end) => {
       let finishSong: ((response: Response) => void) | undefined;
       const stale = task("late-task", "song-a", "processing");
-      const song = { id: "song-a", title: "late", artist: null, lyrics: null, has_source: false,
+      const song = { id: "song-a", title: "late", artist: null, lyrics: null, lyrics_revision: 0, has_source: false,
         created_at: "2026-01-01T00:00:00Z", tasks: [stale] } as Song;
       server.use(
         http.get("/api/tasks", () => HttpResponse.json([])),

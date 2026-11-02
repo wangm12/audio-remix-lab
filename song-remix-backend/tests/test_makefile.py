@@ -63,4 +63,4 @@ def test_direct_alembic_cli_current_imports_against_the_scratch_database():
         text=True,
     )
     assert result.returncode == 0, result.stdout + result.stderr
-    assert "7c3e2a9d4f10" in result.stdout + result.stderr
+    assert "9f0a7c1d2e43" in result.stdout + result.stderr

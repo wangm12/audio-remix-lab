@@ -1,7 +1,7 @@
 from uuid import UUID
 from datetime import datetime
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from pydantic import field_serializer
 
 INPUT_SNAPSHOT_KEY = "_input_snapshot"
@@ -13,7 +13,16 @@ class GenerateRequest(BaseModel):
     style_prompt: str | None = None
     vocal_gender: str = Field(default="auto", max_length=10)
     lyrics: str | None = None
+    expected_lyrics_revision: int | None = Field(default=None, ge=0)
     engine_params: dict | None = None
+
+    @field_validator("expected_lyrics_revision", mode="before")
+    @classmethod
+    def expected_revision_cannot_be_null(cls, value):
+        """Reject an explicit null guard while allowing older clients to omit it."""
+        if value is None:
+            raise ValueError("expected_lyrics_revision cannot be null")
+        return value
 
 
 class TaskResponse(BaseModel):
@@ -42,3 +51,9 @@ class TaskResponse(BaseModel):
         if params is None:
             return None
         return {key: value for key, value in params.items() if key != INPUT_SNAPSHOT_KEY}
+
+
+class GenerateResponse(TaskResponse):
+    """Generation result with the revision committed alongside its input snapshot."""
+
+    lyrics_revision: int

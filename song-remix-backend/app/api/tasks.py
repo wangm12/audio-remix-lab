@@ -12,7 +12,7 @@ from app.database import async_session, get_db
 from app.models.preset import StylePreset
 from app.models.task import GenerationTask
 from app.models.user import User
-from app.schemas.task import GenerateRequest, TaskResponse
+from app.schemas.task import GenerateRequest, GenerateResponse, TaskResponse
 from app.services.engine_manager import engine_manager
 from app.services.task_service import start_generation
 from app.services.song_lifecycle import lock_owned_song
@@ -34,7 +34,7 @@ async def _get_owned_task(db: AsyncSession, task_id: UUID, user: User) -> Genera
     return task
 
 
-@router.post("/songs/{song_id}/generate", response_model=TaskResponse, status_code=status.HTTP_201_CREATED)
+@router.post("/songs/{song_id}/generate", response_model=GenerateResponse, status_code=status.HTTP_201_CREATED)
 async def generate(
     song_id: UUID,
     req: GenerateRequest,
@@ -44,6 +44,22 @@ async def generate(
     song = await lock_owned_song(db, song_id, user.id)
     if song is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Song not found")
+
+    if req.expected_lyrics_revision is not None and req.lyrics is None:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="expected_lyrics_revision requires an explicit lyrics value.",
+        )
+
+    if (
+        req.lyrics is not None
+        and req.expected_lyrics_revision is not None
+        and req.expected_lyrics_revision != song.lyrics_revision
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Lyrics changed on the server. Review the latest lyrics before starting a remix.",
+        )
 
     preset = None
     if req.style_preset_id:
@@ -62,6 +78,7 @@ async def generate(
 
     if req.lyrics is not None:
         song.lyrics = req.lyrics
+        song.lyrics_revision += 1
     resolved_lyrics = song.lyrics
 
     style_prompt = req.style_prompt or (preset.acestep_caption if preset else None)
@@ -82,7 +99,7 @@ async def generate(
     await db.commit()
     await db.refresh(task)
     start_generation(task.id)
-    return task
+    return {**TaskResponse.model_validate(task).model_dump(), "lyrics_revision": song.lyrics_revision}
 
 
 @router.get("/tasks", response_model=list[TaskResponse])

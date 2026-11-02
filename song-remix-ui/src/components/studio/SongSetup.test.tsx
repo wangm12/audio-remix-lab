@@ -13,6 +13,7 @@ const SONG = {
   title: "Rain Butterfly",
   artist: null,
   lyrics: null,
+  lyrics_revision: 0,
   has_source: false,
   created_at: "2026-10-31T00:00:00Z",
 };

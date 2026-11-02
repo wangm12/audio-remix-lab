@@ -6,6 +6,7 @@ import type {
   Task,
   Preset,
   GenerateRequest,
+  GeneratedTask,
   EngineStatus,
 } from "./types";
 
@@ -197,16 +198,22 @@ export const api = {
   songs: {
     list: (signal?: AbortSignal) => request<Song[]>("/songs", { signal }),
     get: (id: string, signal?: AbortSignal) => request<Song>(`/songs/${id}`, { signal }),
+    getForSession: (id: string, session: AuthSessionLease, signal?: AbortSignal) =>
+      request<Song>(`/songs/${id}`, { signal }, session),
     create: (data: { title: string; artist?: string; lyrics?: string }) =>
       request<Song>("/songs", {
         method: "POST",
         body: JSON.stringify(data),
       }),
-    update: (id: string, data: Partial<Pick<Song, "title" | "artist" | "lyrics">>) =>
+    update: (
+      id: string,
+      data: Partial<Pick<Song, "title" | "artist" | "lyrics">> & { expected_lyrics_revision?: number },
+      session?: AuthSessionLease,
+    ) =>
       request<Song>(`/songs/${id}`, {
         method: "PATCH",
         body: JSON.stringify(data),
-      }),
+      }, session),
     uploadSource: (id: string, file: File) => {
       const form = new FormData();
       form.append("file", file);
@@ -217,10 +224,11 @@ export const api = {
     },
     delete: (id: string) =>
       request<void>(`/songs/${id}`, { method: "DELETE" }),
-    structureLyrics: (id: string, lyrics: string) =>
+    structureLyrics: (id: string, lyrics: string, session?: AuthSessionLease) =>
       request<{ lyrics: string; interludes: [number, number][] }>(
         `/songs/${id}/structure-lyrics`,
         { method: "POST", body: JSON.stringify({ lyrics }) },
+        session,
       ),
   },
 
@@ -232,11 +240,11 @@ export const api = {
       return request<Task[]>(`/tasks${params.size ? `?${params}` : ""}`, { signal: options.signal });
     },
     get: (id: string, signal?: AbortSignal) => request<Task>(`/tasks/${id}`, { signal }),
-    generate: (songId: string, data: GenerateRequest) =>
-      request<Task>(`/songs/${songId}/generate`, {
+    generate: (songId: string, data: GenerateRequest, session?: AuthSessionLease) =>
+      request<GeneratedTask>(`/songs/${songId}/generate`, {
         method: "POST",
         body: JSON.stringify(data),
-      }),
+      }, session),
     delete: (id: string) =>
       request<void>(`/tasks/${id}`, { method: "DELETE" }),
     audioUrl: (id: string) => `${BASE}/tasks/${id}/audio`,

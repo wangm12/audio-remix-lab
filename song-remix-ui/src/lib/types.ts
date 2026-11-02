@@ -10,6 +10,7 @@ export interface Song {
   title: string;
   artist: string | null;
   lyrics: string | null;
+  lyrics_revision: number;
   has_source: boolean;
   created_at: string;
   task_count?: number;
@@ -49,7 +50,12 @@ export interface GenerateRequest {
   style_prompt?: string;
   vocal_gender?: string;
   lyrics?: string;
+  expected_lyrics_revision?: number;
   engine_params?: Record<string, unknown>;
+}
+
+export interface GeneratedTask extends Task {
+  lyrics_revision: number;
 }
 
 export interface EngineStatus {

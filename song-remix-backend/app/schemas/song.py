@@ -16,6 +16,15 @@ class SongUpdate(BaseModel):
     title: str | None = Field(default=None, max_length=255)
     artist: str | None = Field(default=None, max_length=255)
     lyrics: str | None = None
+    expected_lyrics_revision: int | None = Field(default=None, ge=0)
+
+    @field_validator("expected_lyrics_revision", mode="before")
+    @classmethod
+    def expected_revision_cannot_be_null(cls, value):
+        """Reject an explicit null guard while allowing legacy clients to omit it."""
+        if value is None:
+            raise ValueError("expected_lyrics_revision cannot be null")
+        return value
 
     @field_validator("title", mode="before")
     @classmethod
@@ -31,6 +40,7 @@ class SongResponse(BaseModel):
     title: str
     artist: str | None
     lyrics: str | None
+    lyrics_revision: int
     has_source: bool
     created_at: datetime
 
