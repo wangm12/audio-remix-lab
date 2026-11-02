@@ -30,6 +30,60 @@ class FakeEventSource {
 afterEach(() => { vi.unstubAllGlobals(); FakeEventSource.instances = []; });
 
 describe("SongStudio generation request", () => {
+  it("does not publish a generation task after its Song work lease was retired", async () => {
+    let missing = false;
+    let serverSong: Song = { ...song, has_source: true };
+    let generations = 0;
+    server.use(
+      http.get("/api/auth/me", () => HttpResponse.json({ id: "user-1", email: "u@example.com", username: "user", created_at: "2026-01-01T00:00:00Z" })),
+      http.get("/api/tasks", () => HttpResponse.json([])),
+      http.get("/api/presets", () => HttpResponse.json([])),
+      http.get("/api/songs/song-1", () => missing ? HttpResponse.json({ detail: "Not found" }, { status: 404 }) : HttpResponse.json(serverSong)),
+      http.post("/api/songs/song-1/generate", async ({ request }) => {
+        generations += 1;
+        const body = await request.json() as { lyrics?: string };
+        serverSong = { ...serverSong, lyrics: body.lyrics ?? serverSong.lyrics, lyrics_revision: serverSong.lyrics_revision + 1 };
+        return HttpResponse.json({ ...accepted, id: "retired-task", lyrics_revision: serverSong.lyrics_revision }, { status: 201 });
+      }),
+      http.get("/api/songs", () => HttpResponse.json([])),
+    );
+    vi.stubGlobal("EventSource", FakeEventSource as unknown as typeof EventSource);
+    const view = await renderApplication(["/studio/song-1"]);
+    await screen.findByRole("textbox", { name: "Lyrics" });
+    fireEvent.click(await screen.findByRole("button", { name: /Custom/ }));
+    fireEvent.change(screen.getByLabelText("Describe the style you want"), { target: { value: "warm R&B" } });
+    fireEvent.change(screen.getByRole("textbox", { name: "Lyrics" }), { target: { value: "B dispatched" } });
+
+    let releaseSuccess!: () => void;
+    let successEntered!: () => void;
+    const successGate = new Promise<void>((resolve) => { releaseSuccess = resolve; });
+    const entered = new Promise<void>((resolve) => { successEntered = resolve; });
+    view.queryClient.getMutationCache().config.onSuccess = async () => {
+      successEntered();
+      await successGate;
+    };
+    fireEvent.click(screen.getByRole("button", { name: "Start Remix" }));
+    await entered;
+    expect(serverSong).toMatchObject({ lyrics: "B dispatched", lyrics_revision: 1 });
+    expect(view.queryClient.getQueryData(["task", "retired-task"])).toBeUndefined();
+
+    missing = true;
+    await act(async () => { await view.queryClient.invalidateQueries({ queryKey: ["song", "song-1"], exact: true }); });
+    expect(await screen.findByText("Song not found.")).toBeInTheDocument();
+    missing = false;
+    await act(async () => { await view.queryClient.invalidateQueries({ queryKey: ["song", "song-1"], exact: true }); });
+    await screen.findByRole("textbox", { name: "Lyrics" });
+    const recoveredSong = view.queryClient.getQueryData<Song>(["song", "song-1"]);
+    expect(recoveredSong?.tasks).toEqual([]);
+
+    releaseSuccess();
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 40)); });
+    expect(view.queryClient.getQueryData(["task", "retired-task"])).toBeUndefined();
+    expect(view.queryClient.getQueryData(["song", "song-1"])).toEqual(recoveredSong);
+    expect(generations).toBe(1);
+    view.unmount();
+  });
+
   it("keeps a generation click canceled when mutation admission resumes after 404 and recovery", async () => {
     let missing = false;
     let row: Song = { ...song, has_source: true };

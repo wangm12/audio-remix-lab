@@ -104,8 +104,10 @@ export function GeneratePanel({ songId, request, disabled, initialTask, onGenera
       return onGenerate ? onGenerate(requestAtClick, workEpoch) : api.tasks.generate(songId, requestAtClick);
     },
     onMutate: () => captureAuthSession(),
-    onSuccess: (task, _variables, session) => {
+    onSuccess: (task, variables, session) => {
       if (!session || !isAuthSessionCurrent(session)) return;
+      if (variables.workEpoch !== undefined
+        && (!captureGenerationIntent || captureGenerationIntent() !== variables.workEpoch)) return;
       setSubmittedTaskId(task.id);
       monitor.track(task);
     },
