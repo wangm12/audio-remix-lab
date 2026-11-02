@@ -30,6 +30,125 @@ class FakeEventSource {
 afterEach(() => { vi.unstubAllGlobals(); FakeEventSource.instances = []; });
 
 describe("SongStudio generation request", () => {
+  it("acknowledges only the exact retry attempt while a later draft and generation are queued", async () => {
+    let serverSong: Song = { ...song, lyrics: "O", has_source: true };
+    const patches: Array<{ lyrics: string; expected_lyrics_revision: number }> = [];
+    const generations: Array<{ lyrics: string; expected_lyrics_revision: number }> = [];
+    let releaseRetry!: () => void;
+    let retryStarted!: () => void;
+    const retryGate = new Promise<void>((resolve) => { releaseRetry = resolve; });
+    const retryEntered = new Promise<void>((resolve) => { retryStarted = resolve; });
+    const admit = (body: { lyrics: string; expected_lyrics_revision: number }) => {
+      if (body.expected_lyrics_revision !== serverSong.lyrics_revision) return HttpResponse.json({ detail: "Lyrics changed on the server." }, { status: 409 });
+      serverSong = { ...serverSong, lyrics: body.lyrics, lyrics_revision: serverSong.lyrics_revision + 1 };
+      return HttpResponse.json(serverSong);
+    };
+    server.use(
+      http.get("/api/auth/me", () => HttpResponse.json({ id: "user-1", email: "u@example.com", username: "user", created_at: "2026-01-01T00:00:00Z" })),
+      http.get("/api/tasks", () => HttpResponse.json([])),
+      http.get("/api/presets", () => HttpResponse.json([])),
+      http.get("/api/songs/song-1", () => HttpResponse.json(serverSong)),
+      http.patch("/api/songs/song-1", async ({ request }) => {
+        const body = await request.json() as { lyrics: string; expected_lyrics_revision: number };
+        patches.push(body);
+        if (patches.length === 1) return HttpResponse.error();
+        if (patches.length === 2) { retryStarted(); await retryGate; }
+        return admit(body);
+      }),
+      http.post("/api/songs/song-1/generate", async ({ request }) => {
+        const body = await request.json() as { lyrics: string; expected_lyrics_revision: number };
+        generations.push(body);
+        const response = admit(body);
+        if (response.status === 409) return response;
+        return HttpResponse.json({ ...accepted, lyrics_revision: serverSong.lyrics_revision }, { status: 201 });
+      }),
+    );
+    vi.stubGlobal("EventSource", FakeEventSource as unknown as typeof EventSource);
+    const view = await renderApplication(["/studio/song-1"]);
+    const textbox = await screen.findByRole("textbox", { name: "Lyrics" });
+    fireEvent.click(await screen.findByRole("button", { name: /Custom/ }));
+    fireEvent.change(screen.getByLabelText("Describe the style you want"), { target: { value: "click style" } });
+    fireEvent.change(textbox, { target: { value: "B retry and click" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await retryEntered;
+    fireEvent.click(screen.getByRole("button", { name: "Start Remix" }));
+    await act(async () => { for (let index = 0; index < 16; index += 1) await Promise.resolve(); });
+    fireEvent.change(textbox, { target: { value: "C later" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    releaseRetry();
+    await waitFor(() => expect(generations).toHaveLength(1));
+    await waitFor(() => expect(serverSong).toMatchObject({ lyrics: "C later", lyrics_revision: 3 }));
+    expect(patches).toEqual([
+      { lyrics: "B retry and click", expected_lyrics_revision: 0 },
+      { lyrics: "B retry and click", expected_lyrics_revision: 0 },
+      { lyrics: "C later", expected_lyrics_revision: 2 },
+    ]);
+    expect(generations[0]).toMatchObject({ lyrics: "B retry and click", expected_lyrics_revision: 1 });
+    expect(screen.getByRole("textbox", { name: "Lyrics" })).toHaveValue("C later");
+    expect(view.queryClient.getQueryData<Song>(["song", "song-1"])).toMatchObject({ lyrics: "C later", lyrics_revision: 3 });
+    view.unmount();
+  });
+
+  it("keeps explicit empty retryable when newer raw null is accepted", async () => {
+    let serverSong: Song = { ...song, lyrics: null };
+    const patches: Array<{ lyrics: string; expected_lyrics_revision: number }> = [];
+    let first = true;
+    const admitNull = (body: { lyrics: null; expected_lyrics_revision: number }) => {
+      if (body.expected_lyrics_revision !== serverSong.lyrics_revision) return 409;
+      serverSong = { ...serverSong, lyrics: body.lyrics, lyrics_revision: serverSong.lyrics_revision + 1 };
+      return 200;
+    };
+    server.use(
+      http.get("/api/auth/me", () => HttpResponse.json({ id: "user-1", email: "u@example.com", username: "user", created_at: "2026-01-01T00:00:00Z" })),
+      http.get("/api/tasks", () => HttpResponse.json([])),
+      http.get("/api/presets", () => HttpResponse.json([])),
+      http.get("/api/songs/song-1", () => HttpResponse.json(serverSong)),
+      http.patch("/api/songs/song-1", async ({ request }) => {
+        patches.push(await request.json() as { lyrics: string; expected_lyrics_revision: number });
+        if (first) { first = false; expect(admitNull({ lyrics: null, expected_lyrics_revision: 0 })).toBe(200); }
+        return HttpResponse.json({ detail: "Temporary save failure." }, { status: 503 });
+      }),
+    );
+    vi.stubGlobal("EventSource", FakeEventSource as unknown as typeof EventSource);
+    const view = await renderApplication(["/studio/song-1"]);
+    const textbox = await screen.findByRole("textbox", { name: "Lyrics" });
+    fireEvent.change(textbox, { target: { value: "temporary" } });
+    fireEvent.change(textbox, { target: { value: "" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await screen.findByRole("alert");
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 1700)); });
+    const owner = getLyricsDraftOwner("song-1", null, 0);
+    expect(serverSong).toMatchObject({ lyrics: null, lyrics_revision: 1 });
+    expect(patches).toEqual([
+      { lyrics: "", expected_lyrics_revision: 0 },
+      { lyrics: "", expected_lyrics_revision: 1 },
+    ]);
+    expect(owner.isDirty).toBe(true);
+    expect(owner.getSnapshot().acknowledgedSequence).toBeLessThan(owner.getSnapshot().sequence);
+    expect(screen.getByRole("button", { name: "Retry" })).toBeEnabled();
+    expect(screen.queryByText("Saved")).not.toBeInTheDocument();
+    view.unmount();
+  });
+
+  it("does not adopt a newer raw null as an explicit empty prop acknowledgment", async () => {
+    server.use(
+      http.get("/api/auth/me", () => HttpResponse.json({ id: "user-1", email: "u@example.com", username: "user", created_at: "2026-01-01T00:00:00Z" })),
+      http.get("/api/tasks", () => HttpResponse.json([])),
+      http.get("/api/presets", () => HttpResponse.json([])),
+      http.get("/api/songs/song-1", () => HttpResponse.json({ ...song, lyrics: null })),
+    );
+    vi.stubGlobal("EventSource", FakeEventSource as unknown as typeof EventSource);
+    const view = await renderApplication(["/studio/song-1"]);
+    const textbox = await screen.findByRole("textbox", { name: "Lyrics" });
+    fireEvent.change(textbox, { target: { value: "temporary" } });
+    fireEvent.change(textbox, { target: { value: "" } });
+    const owner = getLyricsDraftOwner("song-1", null, 0);
+    owner.adoptServer(null, 1);
+    expect(owner.getSnapshot()).toMatchObject({ value: "", serverLyrics: null, revision: 1, acknowledgedSequence: 0, status: "error" });
+    expect(owner.isDirty).toBe(true);
+    view.unmount();
+  });
+
   it("exposes the lyrics editor as a named textbox", async () => {
     server.use(
       http.get("/api/auth/me", () => HttpResponse.json({ id: "user-1", email: "u@example.com", username: "user", created_at: "2026-01-01T00:00:00Z" })),

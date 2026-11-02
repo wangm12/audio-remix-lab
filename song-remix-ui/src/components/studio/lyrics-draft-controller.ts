@@ -170,7 +170,9 @@ export class LyricsDraftOwner {
     this.hasServerSnapshot = true;
     const wasDirty = this.isDirty;
     const value = lyrics ?? "";
-    const matched = this.snapshot.value === value;
+    // Null is a display value only. It cannot prove acceptance of the user's
+    // explicit empty-string write.
+    const matched = this.snapshot.value === lyrics;
     const acceptedVersion = matched && revision > this.snapshot.revision;
     if (wasDirty && !matched && this.timer) {
       clearTimeout(this.timer);
@@ -301,13 +303,25 @@ export class LyricsDraftOwner {
           return false;
         } else if (job.sequence >= this.snapshot.sequence) {
           if (!this.isSessionCurrent) return false;
+          // Freeze the exact retry intent at dispatch. The draft can change
+          // while the request is in flight, but its response acknowledges only
+          // the value and sequence actually sent.
+          const retryAttempt: SaveJob = {
+            ...job,
+            value: this.snapshot.value,
+            sequence: this.snapshot.sequence,
+          };
+          const retryBaseRevision = current.lyrics_revision;
           const retry = await api.songs.update(
             this.songId,
-            { lyrics: this.snapshot.value, expected_lyrics_revision: current.lyrics_revision },
+            { lyrics: retryAttempt.value, expected_lyrics_revision: retryBaseRevision },
             this.session,
           );
           if (!this.isSessionCurrent) return false;
-          this.acknowledge({ ...job, value: this.snapshot.value, sequence: this.snapshot.sequence }, retry);
+          if (retry.lyrics_revision <= retryBaseRevision || retry.lyrics !== retryAttempt.value) {
+            throw new Error("The server did not confirm this lyrics write. Retry before continuing.");
+          }
+          this.acknowledge(retryAttempt, retry);
           return true;
         } else {
           this.setError(firstError, job.sequence);
@@ -396,7 +410,9 @@ export class LyricsDraftOwner {
   private reconcile(song: Song): void {
     if (!this.isSessionCurrent || song.lyrics_revision < this.snapshot.revision) return;
     this.hasServerSnapshot = true;
-    const same = this.snapshot.value === (song.lyrics ?? "");
+    // Compare raw identity here: null and an explicitly saved empty string
+    // render the same, but only the latter can acknowledge an empty intent.
+    const same = this.snapshot.value === song.lyrics;
     const acknowledged = same && song.lyrics_revision > this.snapshot.revision;
     this.update({
       revision: song.lyrics_revision,
