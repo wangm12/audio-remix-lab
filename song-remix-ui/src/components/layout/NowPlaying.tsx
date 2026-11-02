@@ -1,6 +1,7 @@
 import { useRef, useEffect, useCallback } from "react";
 import { Play, Pause, X, Music2 } from "lucide-react";
 import { registerAudioElement, releaseAudioElement, useAudioPlayer } from "@/hooks/useAudioPlayer";
+import { NativeSeekRange } from "@/components/shared/NativeSeekRange";
 
 export function NowPlaying() {
   const { trackId, trackTitle, audioUrl, isPlaying, progress, duration, ownerEpoch, toggle, stop, updateMetrics } =
@@ -37,8 +38,13 @@ export function NowPlaying() {
     const ownerTrackId = trackId;
     const ownerUrl = audioUrl;
     const ownerEpochAtBind = ownerEpoch;
-    const onTime = () => updateMetrics(ownerTrackId, ownerUrl, ownerEpochAtBind, audio.currentTime, audio.duration || 0);
-    const onDur = () => updateMetrics(ownerTrackId, ownerUrl, ownerEpochAtBind, audio.currentTime, audio.duration || 0);
+    const updateFiniteMetrics = () => {
+      const nextDuration = Number.isFinite(audio.duration) && audio.duration > 0 ? audio.duration : 0;
+      const nextProgress = nextDuration > 0 && Number.isFinite(audio.currentTime) ? Math.min(nextDuration, Math.max(0, audio.currentTime)) : 0;
+      updateMetrics(ownerTrackId, ownerUrl, ownerEpochAtBind, nextProgress, nextDuration);
+    };
+    const onTime = updateFiniteMetrics;
+    const onDur = updateFiniteMetrics;
     const onEnd = () => {
       const current = useAudioPlayer.getState();
       if (current.trackId === ownerTrackId && current.audioUrl === ownerUrl && current.ownerEpoch === ownerEpochAtBind) current.pause();
@@ -55,26 +61,22 @@ export function NowPlaying() {
 
   if (!trackId || !audioUrl) return null;
 
-  const pct = duration ? (progress / duration) * 100 : 0;
-
-  const seek = (e: React.MouseEvent<HTMLDivElement>) => {
+  const seek = (seconds: number) => {
     const audio = audioRef.current;
-    if (!audio || !duration) return;
-    const rect = e.currentTarget.getBoundingClientRect();
-    audio.currentTime = ((e.clientX - rect.left) / rect.width) * duration;
+    if (!audio || !Number.isFinite(duration) || duration <= 0) return;
+    const bounded = Math.min(duration, Math.max(0, seconds));
+    audio.currentTime = bounded;
+    updateMetrics(trackId, audioUrl, ownerEpoch ?? 0, bounded, duration);
+  };
+
+  const fmt = (seconds: number) => {
+    const safe = Number.isFinite(seconds) && seconds > 0 ? seconds : 0;
+    const minutes = Math.floor(safe / 60);
+    return `${minutes}:${Math.floor(safe % 60).toString().padStart(2, "0")}`;
   };
 
   return (
     <div className="fixed bottom-0 left-0 right-0 md:left-56 bg-surface-1 border-t border-surface-3/50 z-50">
-      <div
-        className="h-1 bg-surface-3 cursor-pointer"
-        onClick={seek}
-      >
-        <div
-          className="h-full bg-brand transition-[width] duration-200"
-          style={{ width: `${pct}%` }}
-        />
-      </div>
       <div className="flex items-center gap-3 px-4 py-2.5 max-w-screen-xl mx-auto">
         <audio ref={attachAudio} src={audioUrl} preload="metadata" />
         <button
@@ -92,9 +94,10 @@ export function NowPlaying() {
           <Music2 className="w-4 h-4 text-brand shrink-0" />
           <span className="text-sm font-medium truncate">{trackTitle}</span>
         </div>
+        <NativeSeekRange label="Seek mini player" value={progress} duration={duration} onSeek={seek} formatTime={fmt} className="min-w-24 flex-[0.8]" />
         <button
           onClick={stop}
-          className="text-text-muted hover:text-text-primary transition-colors"
+          className="w-10 h-10 flex items-center justify-center rounded-lg text-text-muted hover:text-text-primary transition-colors"
           aria-label="Close player"
         >
           <X className="w-4 h-4" />

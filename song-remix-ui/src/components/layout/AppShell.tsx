@@ -1,4 +1,4 @@
-import { useEffect, useRef, type ReactNode } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { Toaster } from "sonner";
 import { Nav } from "./Nav";
 import { NowPlaying } from "./NowPlaying";
@@ -15,6 +15,8 @@ function MonitorRecoveryNotice() {
 }
 
 export function AppShell({ children }: { children: ReactNode }) {
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const setMobileOpen = useCallback((open: boolean) => setMobileMenuOpen(open), []);
   const ownerRef = useRef<AuthSessionLease | null>(null);
   useEffect(() => {
     ownerRef.current = captureAuthSession();
@@ -33,22 +35,26 @@ export function AppShell({ children }: { children: ReactNode }) {
 
   return (
     <div className="flex h-screen overflow-hidden">
-      <Nav />
-      <main className="flex-1 overflow-y-auto pb-16 pt-14 md:pt-0">
+      <Nav onMobileOpenChange={setMobileOpen} />
+      <main inert={mobileMenuOpen} aria-hidden={mobileMenuOpen} className="flex-1 overflow-y-auto pb-16 pt-14 md:pt-0">
         {children}
       </main>
-      <NowPlaying />
-      <MonitorRecoveryNotice />
-      <Toaster
-        position="top-right"
-        toastOptions={{
-          style: {
-            background: "oklch(0.17 0.008 65)",
-            border: "1px solid oklch(0.28 0.01 65)",
-            color: "oklch(0.92 0.005 65)",
-          },
-        }}
-      />
+      <div inert={mobileMenuOpen} aria-hidden={mobileMenuOpen}>
+        <NowPlaying />
+      </div>
+      <div inert={mobileMenuOpen} aria-hidden={mobileMenuOpen}>
+        <MonitorRecoveryNotice />
+        <Toaster
+          position="top-right"
+          toastOptions={{
+            style: {
+              background: "oklch(0.17 0.008 65)",
+              border: "1px solid oklch(0.28 0.01 65)",
+              color: "oklch(0.92 0.005 65)",
+            },
+          }}
+        />
+      </div>
     </div>
   );
 }

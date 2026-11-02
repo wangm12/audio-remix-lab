@@ -3,6 +3,7 @@ import { Play, Pause, Download, Headphones } from "lucide-react";
 import { api } from "@/lib/api";
 import { registerAudioElement, useAudioPlayer } from "@/hooks/useAudioPlayer";
 import { captureAuthSession, isAuthSessionCurrent, subscribeAuthIdentity, type AuthSessionLease } from "@/lib/auth";
+import { NativeSeekRange } from "@/components/shared/NativeSeekRange";
 
 interface ResultPlayerProps {
   taskId: string;
@@ -41,8 +42,17 @@ export function ResultPlayer({ taskId, songTitle }: ResultPlayerProps) {
     const owner = ownerRef.current;
     if (!audio || !owner) return;
     const isCurrentSource = () => isAuthSessionCurrent(owner) && audio.getAttribute("src") === audioUrl;
-    const onTime = () => { if (isCurrentSource()) setPlayback((current) => ({ ...current, progress: audio.currentTime })); };
-    const onDur = () => { if (isCurrentSource()) setPlayback((current) => ({ ...current, duration: audio.duration })); };
+    const onTime = () => {
+      if (!isCurrentSource()) return;
+      const nextDuration = Number.isFinite(audio.duration) && audio.duration > 0 ? audio.duration : 0;
+      const nextProgress = nextDuration > 0 && Number.isFinite(audio.currentTime) ? Math.min(nextDuration, Math.max(0, audio.currentTime)) : 0;
+      setPlayback((current) => ({ ...current, progress: nextProgress, duration: nextDuration }));
+    };
+    const onDur = () => {
+      if (!isCurrentSource()) return;
+      const nextDuration = Number.isFinite(audio.duration) && audio.duration > 0 ? audio.duration : 0;
+      setPlayback((current) => ({ ...current, progress: 0, duration: nextDuration }));
+    };
     const onEnd = () => { if (isCurrentSource()) setPlayback((current) => ({ ...current, playing: false })); };
     const onPause = () => { if (isCurrentSource()) setPlayback((current) => ({ ...current, playing: false })); };
 
@@ -78,12 +88,14 @@ export function ResultPlayer({ taskId, songTitle }: ResultPlayerProps) {
     globalPlayer.play(taskId, songTitle || "R&B Remix", audioUrl);
   };
 
-  const seek = (e: React.MouseEvent<HTMLDivElement>) => {
+  const seek = (seconds: number) => {
     const audio = audioRef.current;
-    if (!audio || !duration) return;
-    const rect = e.currentTarget.getBoundingClientRect();
-    const pct = (e.clientX - rect.left) / rect.width;
-    audio.currentTime = pct * duration;
+    if (!audio || !Number.isFinite(duration) || duration <= 0 || !Number.isFinite(seconds)) return;
+    const bounded = Math.min(duration, Math.max(0, seconds));
+    audio.currentTime = bounded;
+    if (ownerRef.current && isAuthSessionCurrent(ownerRef.current)) {
+      setPlayback((current) => current.url === audioUrl ? { ...current, progress: bounded } : current);
+    }
   };
 
   const fmt = (s: number) => {
@@ -110,17 +122,7 @@ export function ResultPlayer({ taskId, songTitle }: ResultPlayerProps) {
         </button>
 
         <div className="flex-1 space-y-1">
-          <div
-            className="h-2 bg-surface-3 rounded-full cursor-pointer overflow-hidden"
-            onClick={seek}
-          >
-            <div
-              className="h-full bg-brand rounded-full transition-[width] duration-200"
-              style={{
-                width: duration ? `${(progress / duration) * 100}%` : "0%",
-              }}
-            />
-          </div>
+          <NativeSeekRange label="Seek remix" value={progress} duration={duration} onSeek={seek} formatTime={fmt} />
           <div
             className="flex justify-between text-xs text-text-muted font-mono"
             style={{ fontVariantNumeric: "tabular-nums" }}

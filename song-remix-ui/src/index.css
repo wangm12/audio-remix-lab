@@ -57,8 +57,8 @@
   --color-surface-3: oklch(0.28 0.01 65);
 
   --color-text-primary: oklch(0.92 0.005 65);
-  --color-text-secondary: oklch(0.65 0.008 65);
-  --color-text-muted: oklch(0.45 0.005 65);
+  --color-text-secondary: oklch(0.77 0.008 65);
+  --color-text-muted: oklch(0.73 0.005 65);
 
   --color-success: oklch(0.7 0.15 155);
   --color-error: oklch(0.65 0.18 25);
@@ -105,6 +105,85 @@ kbd {
 :focus-visible {
   outline: 2px solid var(--color-brand);
   outline-offset: 2px;
+}
+
+.seek-range-wrap {
+  position: relative;
+  min-width: 0;
+  height: 44px;
+  display: flex;
+  align-items: center;
+}
+
+.seek-range-track {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 50%;
+  height: 4px;
+  transform: translateY(-50%);
+  border-radius: 999px;
+  background: var(--color-surface-3);
+  pointer-events: none;
+  overflow: hidden;
+}
+
+.seek-range-progress {
+  height: 100%;
+  border-radius: inherit;
+  background: var(--color-brand);
+  pointer-events: none;
+}
+
+.seek-range {
+  position: relative;
+  z-index: 1;
+  width: 100%;
+  height: 44px;
+  margin: 0;
+  appearance: none;
+  background: transparent;
+  cursor: pointer;
+  touch-action: pan-y;
+}
+
+.seek-range:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+.seek-range::-webkit-slider-runnable-track {
+  height: 4px;
+  background: transparent;
+}
+
+.seek-range::-moz-range-track {
+  height: 4px;
+  background: transparent;
+}
+
+.seek-range::-webkit-slider-thumb {
+  width: 16px;
+  height: 16px;
+  margin-top: -6px;
+  appearance: none;
+  border: 2px solid var(--color-surface-1);
+  border-radius: 50%;
+  background: var(--color-brand);
+}
+
+.seek-range::-moz-range-thumb {
+  width: 12px;
+  height: 12px;
+  border: 2px solid var(--color-surface-1);
+  border-radius: 50%;
+  background: var(--color-brand);
+}
+
+@media (hover: none) {
+  .song-actions {
+    opacity: 1;
+  }
 }
 
 input,
