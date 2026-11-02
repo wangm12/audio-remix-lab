@@ -1,7 +1,9 @@
-import { act, fireEvent, render, screen } from "@testing-library/react";
-import { afterEach, describe, expect, it } from "vitest";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { NowPlaying } from "./NowPlaying";
 import { useAudioPlayer } from "@/hooks/useAudioPlayer";
+import { ResultPlayer } from "@/components/studio/ResultPlayer";
+import { setToken } from "@/lib/auth";
 
 describe("NowPlaying keyboard seek", () => {
   afterEach(() => useAudioPlayer.getState().stop());
@@ -36,5 +38,36 @@ describe("NowPlaying keyboard seek", () => {
     rerender(<NowPlaying />);
     expect(screen.getByRole("slider", { name: "Seek mini player" })).toBeDisabled();
     expect(screen.getByRole("slider", { name: "Seek mini player" })).toHaveValue("0");
+  });
+
+  it("keeps mounted inline playback usable when the mini player is closed", async () => {
+    setToken("mini-close-owner");
+    const play = vi.spyOn(HTMLMediaElement.prototype, "play").mockResolvedValue(undefined);
+    vi.spyOn(HTMLMediaElement.prototype, "pause").mockImplementation(() => {});
+    vi.spyOn(HTMLMediaElement.prototype, "load").mockImplementation(() => {});
+    const view = render(
+      <>
+        <ResultPlayer taskId="task-1" songTitle="Mix" />
+        <NowPlaying />
+      </>,
+    );
+    const inlineAudio = view.container.querySelector("audio")!;
+    Object.defineProperty(inlineAudio, "duration", { configurable: true, value: 12 });
+    Object.defineProperty(inlineAudio, "currentTime", { configurable: true, writable: true, value: 0 });
+    fireEvent.loadedMetadata(inlineAudio);
+    act(() => useAudioPlayer.getState().play("task-1", "Mix", "/api/tasks/task-1/audio"));
+
+    expect(screen.getByRole("slider", { name: "Seek remix" })).toHaveAttribute("max", "12");
+    fireEvent.click(screen.getByRole("button", { name: "Close player" }));
+
+    expect(inlineAudio.getAttribute("src")).toBe("/api/tasks/task-1/audio");
+    expect(screen.getByRole("slider", { name: "Seek remix" })).toBeEnabled();
+    fireEvent.click(screen.getByRole("button", { name: "Play" }));
+    await waitFor(() => expect(play).toHaveBeenCalledWith());
+    expect(inlineAudio.getAttribute("src")).toBe("/api/tasks/task-1/audio");
+    expect(screen.getByRole("button", { name: "Pause" })).toBeInTheDocument();
+    inlineAudio.currentTime = 3;
+    fireEvent.timeUpdate(inlineAudio);
+    expect(screen.getByRole("slider", { name: "Seek remix" })).toHaveValue("3");
   });
 });

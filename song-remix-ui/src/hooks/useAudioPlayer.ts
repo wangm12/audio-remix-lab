@@ -33,6 +33,7 @@ interface AudioPlayerState {
   play: (trackId: string, title: string, url: string) => void;
   pause: () => void;
   toggle: () => void;
+  closeMiniPlayer: () => void;
   updateMetrics: (trackId: string, url: string, ownerEpoch: number, progress: number, duration: number) => void;
   stop: () => void;
 }
@@ -51,6 +52,7 @@ export const useAudioPlayer = create<AudioPlayerState>((set, get) => ({
   },
   pause: () => set({ isPlaying: false }),
   toggle: () => set({ isPlaying: !get().isPlaying }),
+  closeMiniPlayer: () => set({ trackId: null, trackTitle: null, audioUrl: null, isPlaying: false, progress: 0, duration: 0, ownerEpoch: null }),
   updateMetrics: (trackId, url, ownerEpoch, progress, duration) => {
     const current = get();
     if (current.trackId === trackId && current.audioUrl === url && current.ownerEpoch === ownerEpoch) set({ progress, duration });

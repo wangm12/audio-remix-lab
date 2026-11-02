@@ -4,8 +4,9 @@ import { registerAudioElement, releaseAudioElement, useAudioPlayer } from "@/hoo
 import { NativeSeekRange } from "@/components/shared/NativeSeekRange";
 
 export function NowPlaying() {
-  const { trackId, trackTitle, audioUrl, isPlaying, progress, duration, ownerEpoch, toggle, stop, updateMetrics } =
+  const { trackId, trackTitle, audioUrl, isPlaying, progress, duration, ownerEpoch, toggle, updateMetrics } =
     useAudioPlayer();
+  const closeMiniPlayer = useAudioPlayer((state) => state.closeMiniPlayer);
   const audioRef = useRef<HTMLAudioElement>(null);
   const releaseMediaRef = useRef<(() => void) | null>(null);
   const attachAudio = useCallback((audio: HTMLAudioElement | null) => {
@@ -96,7 +97,7 @@ export function NowPlaying() {
         </div>
         <NativeSeekRange label="Seek mini player" value={progress} duration={duration} onSeek={seek} formatTime={fmt} className="min-w-24 flex-[0.8]" />
         <button
-          onClick={stop}
+          onClick={closeMiniPlayer}
           className="w-10 h-10 flex items-center justify-center rounded-lg text-text-muted hover:text-text-primary transition-colors"
           aria-label="Close player"
         >

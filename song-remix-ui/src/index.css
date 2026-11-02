@@ -192,6 +192,12 @@ select {
   font-family: inherit;
 }
 
+input::placeholder,
+textarea::placeholder {
+  color: var(--color-text-muted);
+  opacity: 1;
+}
+
 @media (prefers-reduced-motion: no-preference) {
   @keyframes fade-in-up {
     from {
