@@ -68,15 +68,6 @@ function SongStudio({ song, songSession }: { song: Song; songSession: AuthSessio
   const lyrics = lyricsState.value;
 
   useEffect(() => {
-    const protectUnsavedLyrics = (event: BeforeUnloadEvent) => {
-      if (!lyricsDraft.isDirty) return;
-      event.preventDefault();
-      event.returnValue = "";
-    };
-    window.addEventListener("beforeunload", protectUnsavedLyrics);
-    return () => window.removeEventListener("beforeunload", protectUnsavedLyrics);
-  }, [lyricsDraft, lyricsState]);
-  useEffect(() => {
     for (const task of song.tasks ?? []) {
       if (task.status === "pending" || task.status === "processing") track(task);
     }

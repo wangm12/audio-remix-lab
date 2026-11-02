@@ -1,4 +1,5 @@
 import { useEffect, useState, useSyncExternalStore } from "react";
+import { useQueryClient, type QueryClient } from "@tanstack/react-query";
 import { ApiError, api } from "@/lib/api";
 import { captureAuthSession, isAuthSessionCurrent, subscribeAuthIdentity, type AuthSessionLease } from "@/lib/auth";
 import type { GeneratedTask, GenerateRequest, Song } from "@/lib/types";
@@ -26,6 +27,23 @@ type DraftJob = SaveJob | GenerateJob;
 
 const owners = new Map<string, LyricsDraftOwner>();
 const songReadLeases = new WeakMap<Song, AuthSessionLease>();
+let unloadListener: ((event: BeforeUnloadEvent) => void) | undefined;
+
+function syncUnloadProtection(): void {
+  if (typeof window === "undefined") return;
+  const needed = [...owners.values()].some((owner) => owner.isDirty && owner.isSessionCurrent);
+  if (needed && !unloadListener) {
+    unloadListener = (event) => {
+      if (![...owners.values()].some((owner) => owner.isDirty && owner.isSessionCurrent)) return;
+      event.preventDefault();
+      event.returnValue = "";
+    };
+    window.addEventListener("beforeunload", unloadListener);
+  } else if (!needed && unloadListener) {
+    window.removeEventListener("beforeunload", unloadListener);
+    unloadListener = undefined;
+  }
+}
 
 export function tagSongReadSession(song: Song, session: AuthSessionLease): Song {
   songReadLeases.set(song, session);
@@ -43,6 +61,7 @@ function sessionKey(session: AuthSessionLease): string {
 subscribeAuthIdentity(() => {
   for (const owner of owners.values()) owner.clearForIdentityChange();
   owners.clear();
+  syncUnloadProtection();
 });
 
 export function getLyricsDraftOwner(
@@ -68,6 +87,12 @@ export class LyricsDraftOwner {
   private timer: ReturnType<typeof setTimeout> | undefined;
   private active = false;
   private hasServerSnapshot: boolean;
+  private retired = false;
+  private queryClient: QueryClient | undefined;
+  private requiresManualRetry = false;
+  private prerequisiteError: Error | undefined;
+  private runningSave: SaveJob | undefined;
+  private runningGenerate: GenerateJob | undefined;
   readonly songId: string;
   private readonly session: AuthSessionLease;
 
@@ -101,11 +126,20 @@ export class LyricsDraftOwner {
   };
 
   get isDirty(): boolean {
-    return this.snapshot.sequence > this.snapshot.acknowledgedSequence || this.snapshot.value !== (this.snapshot.serverLyrics ?? "");
+    return this.snapshot.sequence > this.snapshot.acknowledgedSequence
+      || this.snapshot.value !== (this.snapshot.serverLyrics ?? "");
+  }
+
+  get isSessionCurrent(): boolean {
+    return !this.retired && isAuthSessionCurrent(this.session);
+  }
+
+  setQueryClient(client: QueryClient): void {
+    this.queryClient = client;
   }
 
   edit(value: string): void {
-    if (!isAuthSessionCurrent(this.session)) return;
+    if (!this.isSessionCurrent) return;
     const sequence = this.snapshot.sequence + 1;
     const sameAsServer = value === (this.snapshot.serverLyrics ?? "");
     const clean = sameAsServer && !this.isDirty && !this.active && this.jobs.length === 0;
@@ -124,12 +158,12 @@ export class LyricsDraftOwner {
   }
 
   isCurrentIntent(sequence: number, value: string): boolean {
-    return isAuthSessionCurrent(this.session) && this.snapshot.sequence === sequence && this.snapshot.value === value;
+    return this.isSessionCurrent && this.snapshot.sequence === sequence && this.snapshot.value === value;
   }
 
   adoptServer(lyrics: string | null, revision: number): void {
     if (
-      !isAuthSessionCurrent(this.session)
+      !this.isSessionCurrent
       || revision < this.snapshot.revision
       || (revision === this.snapshot.revision && this.hasServerSnapshot)
     ) return;
@@ -137,6 +171,7 @@ export class LyricsDraftOwner {
     const wasDirty = this.isDirty;
     const value = lyrics ?? "";
     const matched = this.snapshot.value === value;
+    const acceptedVersion = matched && revision > this.snapshot.revision;
     if (wasDirty && !matched && this.timer) {
       clearTimeout(this.timer);
       this.timer = undefined;
@@ -145,9 +180,9 @@ export class LyricsDraftOwner {
       serverLyrics: lyrics,
       revision,
       value: wasDirty && !matched ? this.snapshot.value : value,
-      acknowledgedSequence: matched ? this.snapshot.sequence : this.snapshot.acknowledgedSequence,
-      status: matched ? "saved" : wasDirty ? "error" : "saved",
-      error: matched
+      acknowledgedSequence: acceptedVersion ? this.snapshot.sequence : this.snapshot.acknowledgedSequence,
+      status: acceptedVersion ? "saved" : wasDirty ? "error" : "saved",
+      error: acceptedVersion
         ? null
         : wasDirty
           ? this.snapshot.error ?? "Lyrics changed on the server. Review the latest lyrics and retry your save."
@@ -174,13 +209,20 @@ export class LyricsDraftOwner {
   }
 
   clearForIdentityChange(): void {
+    this.retired = true;
     if (this.timer) clearTimeout(this.timer);
     this.timer = undefined;
     for (const job of this.jobs.splice(0)) {
       if (job.kind === "generate") job.reject(new Error("Your session changed. Sign in again before starting a remix."));
       else for (const resolve of job.waiters) resolve();
     }
-    this.update({ value: "", serverLyrics: null, revision: 0, sequence: 0, acknowledgedSequence: 0, status: "saved", error: null });
+    for (const resolve of this.runningSave?.waiters ?? []) resolve();
+    this.runningSave = undefined;
+    this.runningGenerate?.reject(new Error("Your session changed. Sign in again before starting a remix."));
+    this.runningGenerate = undefined;
+    this.snapshot = { value: "", serverLyrics: null, revision: 0, sequence: 0, acknowledgedSequence: 0, status: "saved", error: null };
+    syncUnloadProtection();
+    for (const listener of this.listeners) listener();
   }
 
   private async queueSave(value: string, sequence: number): Promise<void> {
@@ -202,69 +244,113 @@ export class LyricsDraftOwner {
     if (this.active) return;
     this.active = true;
     try {
-      while (this.jobs.length && isAuthSessionCurrent(this.session)) {
+      while (this.jobs.length && this.isSessionCurrent) {
         const job = this.jobs.shift()!;
-        if (job.kind === "save") await this.runSave(job);
-        else await this.runGenerate(job);
+        if (job.kind === "save") {
+          const accepted = await this.runSave(job);
+          if (accepted) {
+            this.requiresManualRetry = false;
+            this.prerequisiteError = undefined;
+          }
+        } else if (this.requiresManualRetry) {
+          const error = this.prerequisiteError ?? new Error("Save your latest lyrics successfully before starting a remix.");
+          this.setError(error, job.sequence);
+          job.reject(error);
+        } else await this.runGenerate(job);
       }
     } finally {
       this.active = false;
-      if (this.jobs.length && isAuthSessionCurrent(this.session)) void this.drain();
+      if (this.jobs.length && this.isSessionCurrent) void this.drain();
       else if (this.snapshot.status !== "error") this.refreshStatus();
     }
   }
 
-  private async runSave(job: SaveJob): Promise<void> {
+  private async runSave(job: SaveJob): Promise<boolean> {
+    if (!this.isSessionCurrent) return false;
     if (job.sequence < this.snapshot.sequence) {
       for (const resolve of job.waiters) resolve();
-      return;
+      return false;
     }
+    const baseRevision = this.snapshot.revision;
+    this.runningSave = job;
     try {
       const response = await api.songs.update(
         this.songId,
-        { lyrics: job.value, expected_lyrics_revision: this.snapshot.revision },
+        { lyrics: job.value, expected_lyrics_revision: baseRevision },
         this.session,
       );
+      if (!this.isSessionCurrent) return false;
+      if (response.lyrics_revision <= baseRevision || response.lyrics !== job.value) {
+        throw new Error("The server did not confirm this lyrics write. Retry before continuing.");
+      }
       this.hasServerSnapshot = true;
       this.acknowledge(job, response);
+      return true;
     } catch (firstError) {
-      if (!isAuthSessionCurrent(this.session)) return;
+      if (!this.isSessionCurrent) return false;
       try {
         const current = await api.songs.getForSession(this.songId, this.session);
+        if (!this.isSessionCurrent) return false;
         this.reconcile(current);
-        if (job.sequence >= this.snapshot.sequence && current.lyrics === job.value) {
-          this.acknowledge(job, current);
+        if (job.sequence >= this.snapshot.sequence && current.lyrics === job.value && current.lyrics_revision > baseRevision) {
+          return true;
         } else if (firstError instanceof ApiError && firstError.status === 409) {
+          this.prerequisiteError = firstError;
           if (job.sequence >= this.snapshot.sequence) this.setError(firstError, job.sequence);
+          this.requiresManualRetry = true;
+          return false;
         } else if (job.sequence >= this.snapshot.sequence) {
+          if (!this.isSessionCurrent) return false;
           const retry = await api.songs.update(
             this.songId,
             { lyrics: this.snapshot.value, expected_lyrics_revision: current.lyrics_revision },
             this.session,
           );
+          if (!this.isSessionCurrent) return false;
           this.acknowledge({ ...job, value: this.snapshot.value, sequence: this.snapshot.sequence }, retry);
+          return true;
         } else {
           this.setError(firstError, job.sequence);
+          this.requiresManualRetry = true;
+          return false;
         }
       } catch (retryError) {
+        if (!this.isSessionCurrent) return false;
+        this.prerequisiteError = retryError instanceof Error ? retryError : new Error("Could not save lyrics");
         this.setError(retryError, job.sequence);
+        this.requiresManualRetry = true;
+        return false;
       }
     } finally {
-      for (const resolve of job.waiters) resolve();
+      if (this.runningSave === job) {
+        this.runningSave = undefined;
+        if (this.isSessionCurrent) for (const resolve of job.waiters) resolve();
+      }
     }
+    return false;
   }
 
   private async runGenerate(job: GenerateJob): Promise<void> {
-    if (!isAuthSessionCurrent(this.session)) {
+    if (!this.isSessionCurrent) {
       job.reject(new Error("Your session changed. Sign in again before starting a remix."));
       return;
     }
+    const baseRevision = this.snapshot.revision;
+    this.runningGenerate = job;
     try {
       const task = await api.tasks.generate(
         this.songId,
-        { ...job.request, lyrics: job.value, expected_lyrics_revision: this.snapshot.revision },
+        { ...job.request, lyrics: job.value, expected_lyrics_revision: baseRevision },
         this.session,
       );
+      if (!this.isSessionCurrent) {
+        job.reject(new Error("Your session changed. Sign in again before starting a remix."));
+        return;
+      }
+      if (task.lyrics_revision <= baseRevision || task.lyrics_revision < this.snapshot.revision) {
+        job.reject(new Error("Lyrics changed while the remix was starting. Review and retry."));
+        return;
+      }
       this.update({
         revision: task.lyrics_revision,
         serverLyrics: job.value,
@@ -273,21 +359,29 @@ export class LyricsDraftOwner {
         error: null,
       });
       this.hasServerSnapshot = true;
+      this.publishLyrics(job.value, task.lyrics_revision);
       job.resolve(task);
     } catch (error) {
-      if (isAuthSessionCurrent(this.session)) {
+      if (this.isSessionCurrent) {
         try {
           const current = await api.songs.getForSession(this.songId, this.session);
+          if (!this.isSessionCurrent) {
+            job.reject(error instanceof Error ? error : new Error("Could not start remix"));
+            return;
+          }
           this.reconcile(current);
         } catch {
           // Keep the original generation failure visible; a follow-up GET is best effort.
         }
       }
       job.reject(error instanceof Error ? error : new Error("Could not start remix"));
+    } finally {
+      if (this.runningGenerate === job) this.runningGenerate = undefined;
     }
   }
 
   private acknowledge(job: SaveJob, song: Song): void {
+    if (!this.isSessionCurrent || song.lyrics_revision <= this.snapshot.revision || song.lyrics !== job.value) return;
     const isLatest = this.snapshot.sequence === job.sequence && this.snapshot.value === job.value;
     this.update({
       revision: song.lyrics_revision,
@@ -296,23 +390,28 @@ export class LyricsDraftOwner {
       status: isLatest ? "saved" : "saving",
       error: null,
     });
+    this.publishLyrics(song.lyrics, song.lyrics_revision);
   }
 
   private reconcile(song: Song): void {
+    if (!this.isSessionCurrent || song.lyrics_revision < this.snapshot.revision) return;
     this.hasServerSnapshot = true;
     const same = this.snapshot.value === (song.lyrics ?? "");
+    const acknowledged = same && song.lyrics_revision > this.snapshot.revision;
     this.update({
-      revision: Math.max(this.snapshot.revision, song.lyrics_revision),
+      revision: song.lyrics_revision,
       serverLyrics: song.lyrics,
-      acknowledgedSequence: same ? this.snapshot.sequence : this.snapshot.acknowledgedSequence,
-      status: same ? "saved" : "saving",
-      error: null,
+      acknowledgedSequence: acknowledged ? this.snapshot.sequence : this.snapshot.acknowledgedSequence,
+      status: acknowledged ? "saved" : this.isDirty ? "error" : "saved",
+      error: acknowledged ? null : this.isDirty ? this.snapshot.error ?? "Lyrics were not confirmed. Retry the save." : null,
     });
+    this.publishLyrics(song.lyrics, song.lyrics_revision);
   }
 
   private setError(error: unknown, sequence: number): void {
-    if (sequence !== this.snapshot.sequence || !isAuthSessionCurrent(this.session)) return;
+    if (sequence !== this.snapshot.sequence || !this.isSessionCurrent) return;
     const message = error instanceof Error ? error.message : "Could not save lyrics";
+    this.requiresManualRetry = true;
     this.update({ status: "error", error: message || "Could not save lyrics" });
   }
 
@@ -324,8 +423,19 @@ export class LyricsDraftOwner {
   }
 
   private update(patch: Partial<LyricsDraftState>): void {
+    if (!this.isSessionCurrent) return;
     this.snapshot = { ...this.snapshot, ...patch };
+    syncUnloadProtection();
     for (const listener of this.listeners) listener();
+  }
+
+  private publishLyrics(lyrics: string | null, revision: number): void {
+    if (!this.isSessionCurrent || !this.queryClient) return;
+    const patch = (song: Song | undefined) => song && song.id === this.songId && song.lyrics_revision <= revision
+      ? { ...song, lyrics, lyrics_revision: revision }
+      : song;
+    this.queryClient.setQueryData<Song>(["song", this.songId], patch);
+    this.queryClient.setQueryData<Song[]>(["songs"], (songs) => songs?.map((song) => patch(song) ?? song));
   }
 }
 
@@ -347,6 +457,8 @@ export function useLyricsDraft(
     queryBelongsToCurrentSession ? revision : 0,
     queryBelongsToCurrentSession,
   ));
+  const queryClient = useQueryClient();
+  owner.setQueryClient(queryClient);
   useEffect(() => subscribeAuthIdentity(() => setOwner(getLyricsDraftOwner(songId, null, 0, false))), [songId]);
   useEffect(() => {
     if (queryBelongsToCurrentSession) owner.adoptServer(lyrics, revision);

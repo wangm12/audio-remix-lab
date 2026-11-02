@@ -22,6 +22,11 @@ function mergeTaskHistory(tasks: Task[] | undefined, task: Task) {
   return merged.sort((a, b) => b.created_at.localeCompare(a.created_at));
 }
 
+function preserveLyricsRevision(incoming: Song, previous: Song | undefined): Song {
+  if (!previous || previous.id !== incoming.id || previous.lyrics_revision <= incoming.lyrics_revision) return incoming;
+  return { ...incoming, lyrics: previous.lyrics, lyrics_revision: previous.lyrics_revision };
+}
+
 function TaskWatcher({ task }: { task: Task }) {
   useTaskStream(task.id);
   return null;
@@ -267,15 +272,19 @@ export function TaskMonitorProvider({ children, isEnabled = true }: { children: 
     if (stopped.current || (captured !== undefined && !isGenerationCurrent(captured))) {
       return captured === undefined ? { ...song, tasks: [] } : null;
     }
-    const visibleTasks = publishSongTasks(song);
-    return { ...song, ...(visibleTasks ? { tasks: visibleTasks } : {}) };
-  }, [isGenerationCurrent, publishSongTasks]);
+    const previous = qc.getQueryData<Song>(["song", song.id]);
+    const current = preserveLyricsRevision(song, previous);
+    const visibleTasks = publishSongTasks(current);
+    return { ...current, ...(visibleTasks ? { tasks: visibleTasks } : {}) };
+  }, [isGenerationCurrent, publishSongTasks, qc]);
   const visibleSongs = useCallback((songs: Song[], captured?: number): Song[] =>
     stopped.current || (captured !== undefined && !isGenerationCurrent(captured))
       ? [] : songs.filter((song) => !deletedSongs.current.has(song.id)).map((song) => {
-        const tasks = publishSongTasks(song);
-        return { ...song, ...(tasks ? { tasks } : {}) };
-      }), [isGenerationCurrent, publishSongTasks]);
+        const previous = qc.getQueryData<Song[]>(["songs"])?.find((item) => item.id === song.id);
+        const current = preserveLyricsRevision(song, previous);
+        const tasks = publishSongTasks(current);
+        return { ...current, ...(tasks ? { tasks } : {}) };
+      }), [isGenerationCurrent, publishSongTasks, qc]);
 
   const value = useMemo(() => ({ activeTasks: tasks, recoveryIds, track, publish: update,
     forgetTask, forgetSong, stopAll, captureGeneration, isGenerationCurrent, setRecovery, visibleSong, visibleSongs, registerWatcher }), [tasks, recoveryIds, track, update, forgetTask, forgetSong, stopAll, captureGeneration, isGenerationCurrent, setRecovery, visibleSong, visibleSongs, registerWatcher]);
