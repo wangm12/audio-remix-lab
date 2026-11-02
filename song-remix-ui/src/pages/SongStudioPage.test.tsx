@@ -30,6 +30,61 @@ class FakeEventSource {
 afterEach(() => { vi.unstubAllGlobals(); FakeEventSource.instances = []; });
 
 describe("SongStudio generation request", () => {
+  it("retires pending lyrics work on the current Song 404 and restores the exact draft on a later 200", async () => {
+    let missing = false;
+    let patches = 0;
+    const missingSong = { ...song, id: "song-missing", lyrics: "server draft" };
+    server.use(
+      http.get("/api/auth/me", () => HttpResponse.json({ id: "user-1", email: "u@example.com", username: "user", created_at: "2026-01-01T00:00:00Z" })),
+      http.get("/api/tasks", () => HttpResponse.json([])),
+      http.get("/api/presets", () => HttpResponse.json([])),
+      http.get("/api/songs/song-missing", () => missing
+        ? HttpResponse.json({ detail: "Not found" }, { status: 404 })
+        : HttpResponse.json(missingSong)),
+      http.patch("/api/songs/song-missing", async ({ request }) => {
+        patches += 1;
+        const body = await request.json() as { lyrics: string };
+        return HttpResponse.json({ ...missingSong, lyrics: body.lyrics, lyrics_revision: 1 });
+      }),
+      http.get("/api/songs", () => HttpResponse.json([])),
+    );
+    vi.stubGlobal("EventSource", FakeEventSource as unknown as typeof EventSource);
+    const view = await renderApplication(["/studio/song-missing"]);
+    const textbox = await screen.findByRole("textbox", { name: "Lyrics" });
+    fireEvent.change(textbox, { target: { value: "preserved local draft" } });
+    missing = true;
+    await view.queryClient.invalidateQueries({ queryKey: ["song", "song-missing"] });
+    expect(await screen.findByText("Song not found.")).toBeInTheDocument();
+    const owner = getLyricsDraftOwner("song-missing", "server draft", 0);
+    expect(owner.getSnapshot()).toMatchObject({ value: "preserved local draft", status: "error" });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 1600)); });
+    expect(patches).toBe(0);
+
+    missing = false;
+    await view.router.navigate({ to: "/library" });
+    await view.router.navigate({ to: "/studio/$songId", params: { songId: "song-missing" } });
+    expect(await screen.findByRole("textbox", { name: "Lyrics" })).toHaveValue("preserved local draft");
+    expect(screen.getByRole("button", { name: "Retry" })).toBeEnabled();
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 1600)); });
+    expect(patches).toBe(0);
+    view.unmount();
+  });
+
+  it("keeps a genuine initial detail 404 distinct from a retryable 503", async () => {
+    server.use(
+      http.get("/api/auth/me", () => HttpResponse.json({ id: "user-1", email: "u@example.com", username: "user", created_at: "2026-01-01T00:00:00Z" })),
+      http.get("/api/tasks", () => HttpResponse.json([])),
+      http.get("/api/presets", () => HttpResponse.json([])),
+      http.get("/api/songs/song-missing", () => HttpResponse.json({ detail: "Not found" }, { status: 404 })),
+    );
+    vi.stubGlobal("EventSource", FakeEventSource as unknown as typeof EventSource);
+    const view = await renderApplication(["/studio/song-missing"]);
+    expect(await screen.findByText("Song not found.")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Back to Library" })).toHaveAttribute("href", "/library");
+    expect(screen.queryByRole("button", { name: "Retry" })).not.toBeInTheDocument();
+    view.unmount();
+  });
+
   it("acknowledges only the exact retry attempt while a later draft and generation are queued", async () => {
     let serverSong: Song = { ...song, lyrics: "O", has_source: true };
     const patches: Array<{ lyrics: string; expected_lyrics_revision: number }> = [];

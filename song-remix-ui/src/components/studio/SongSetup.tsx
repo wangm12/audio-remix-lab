@@ -16,6 +16,9 @@ export function SongSetup({ onSongCreated }: SongSetupProps) {
   const [error, setError] = useState("");
   const fileRef = useRef<HTMLInputElement>(null);
   const mounted = useRef(false);
+  const submitting = useRef(false);
+  const attemptId = useRef(0);
+  const persistedMetadata = useRef<{ title: string; artist: string | null } | null>(null);
 
   useEffect(() => {
     mounted.current = true;
@@ -24,8 +27,12 @@ export function SongSetup({ onSongCreated }: SongSetupProps) {
 
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
+    if (submitting.current) return;
+    submitting.current = true;
+    const attempt = ++attemptId.current;
+    const submitted = { title, artist, file: audioFile };
     const submittingSession = captureAuthSession();
-    const stillSubmitting = () => mounted.current && isAuthSessionCurrent(submittingSession);
+    const stillSubmitting = () => mounted.current && attemptId.current === attempt && isAuthSessionCurrent(submittingSession);
     setError("");
     setUploading(true);
 
@@ -33,17 +40,29 @@ export function SongSetup({ onSongCreated }: SongSetupProps) {
       let songId = createdSongId;
       if (!songId) {
         const song = await api.songs.create({
-          title,
-          artist: artist || undefined,
+          title: submitted.title,
+          artist: submitted.artist || undefined,
         });
         if (!stillSubmitting()) return;
         songId = song.id;
+        persistedMetadata.current = { title: submitted.title, artist: submitted.artist || null };
         setCreatedSongId(song.id);
+      } else {
+        const lastSaved = persistedMetadata.current;
+        if (!lastSaved || submitted.title !== lastSaved.title || (submitted.artist || null) !== lastSaved.artist) {
+          if (!stillSubmitting()) return;
+          await api.songs.update(songId, {
+            title: submitted.title,
+            artist: submitted.artist || null,
+          }, submittingSession);
+          if (!stillSubmitting()) return;
+          persistedMetadata.current = { title: submitted.title, artist: submitted.artist || null };
+        }
       }
 
-      if (audioFile) {
+      if (submitted.file) {
         if (!stillSubmitting()) return;
-        await api.songs.uploadSource(songId, audioFile);
+        await api.songs.uploadSource(songId, submitted.file);
         if (!stillSubmitting()) return;
       }
 
@@ -52,6 +71,7 @@ export function SongSetup({ onSongCreated }: SongSetupProps) {
     } catch (err) {
       if (stillSubmitting()) setError(err instanceof Error ? err.message : "Failed to create song");
     } finally {
+      if (attemptId.current === attempt) submitting.current = false;
       if (stillSubmitting()) setUploading(false);
     }
   };
@@ -67,6 +87,7 @@ export function SongSetup({ onSongCreated }: SongSetupProps) {
             id="title"
             type="text"
             required
+            disabled={uploading}
             value={title}
             onChange={(e) => setTitle(e.target.value)}
             className="w-full px-3 py-2.5 bg-surface-1 border border-surface-3 rounded-lg text-sm focus:border-brand focus:ring-1 focus:ring-brand outline-none transition-colors"
@@ -80,6 +101,7 @@ export function SongSetup({ onSongCreated }: SongSetupProps) {
           <input
             id="artist"
             type="text"
+            disabled={uploading}
             value={artist}
             onChange={(e) => setArtist(e.target.value)}
             className="w-full px-3 py-2.5 bg-surface-1 border border-surface-3 rounded-lg text-sm focus:border-brand focus:ring-1 focus:ring-brand outline-none transition-colors"
@@ -98,7 +120,8 @@ export function SongSetup({ onSongCreated }: SongSetupProps) {
             <span className="text-sm truncate flex-1">{audioFile.name}</span>
             <button
               type="button"
-              onClick={() => setAudioFile(null)}
+              disabled={uploading}
+              onClick={() => { setAudioFile(null); if (fileRef.current) fileRef.current.value = ""; }}
               className="text-text-muted hover:text-error transition-colors"
               aria-label="Remove file"
             >
@@ -118,6 +141,7 @@ export function SongSetup({ onSongCreated }: SongSetupProps) {
         <input
           ref={fileRef}
           type="file"
+          disabled={uploading}
           accept="audio/*,.mp3,.wav,.flac,.ogg,.m4a"
           aria-label="Source audio file"
           className="hidden"
@@ -125,7 +149,7 @@ export function SongSetup({ onSongCreated }: SongSetupProps) {
         />
       </div>
 
-      {error && <p className="text-error text-sm">{error}</p>}
+      {error && <p role="alert" className="text-error text-sm">{error}</p>}
 
       <button
         type="submit"

@@ -11,7 +11,7 @@ import { captureAuthSession, isAuthSessionCurrent } from "@/lib/auth";
 export function LibraryPage() {
   const qc = useQueryClient();
   const monitor = useTaskMonitor();
-  const { data: songs, isLoading } = useQuery({
+  const songsQuery = useQuery({
     queryKey: ["songs"],
     queryFn: async ({ signal }) => {
       const generation = monitor.captureGeneration();
@@ -21,6 +21,7 @@ export function LibraryPage() {
       return monitor.visibleSongs(songs, generation);
     },
   });
+  const { data: songs, isPending, isError, isFetching, refetch } = songsQuery;
 
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
   const [deleteError, setDeleteError] = useState<string | null>(null);
@@ -56,7 +57,9 @@ export function LibraryPage() {
         </Link>
       </div>
 
-      {isLoading ? (
+      {isPending && !songs ? (
+        <div role="status" aria-label="Loading songs">
+          <span className="sr-only">Loading songs…</span>
         <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
           {Array.from({ length: 4 }).map((_, i) => (
             <div
@@ -65,7 +68,17 @@ export function LibraryPage() {
             />
           ))}
         </div>
+        </div>
+      ) : isError && !songs ? (
+        <div className="space-y-3" role="alert">
+          <p className="text-sm text-error">Unable to load your songs.</p>
+          <button type="button" onClick={() => void refetch()} disabled={isFetching} className="px-3 py-2 rounded-lg bg-surface-2 text-sm font-medium disabled:opacity-50">
+            {isFetching ? "Retrying…" : "Retry"}
+          </button>
+        </div>
       ) : !songs?.length ? (
+        <>
+        {isError && <div role="alert" className="mb-4 text-sm text-error">Songs could not be refreshed. <button type="button" onClick={() => void refetch()} disabled={isFetching} className="underline disabled:opacity-50">{isFetching ? "Retrying…" : "Retry"}</button></div>}
         <EmptyState
           icon={<Library className="w-12 h-12 text-text-muted" />}
           title="No songs yet"
@@ -79,8 +92,10 @@ export function LibraryPage() {
             </Link>
           }
         />
+        </>
       ) : (
         <>
+        {isError && <div role="alert" className="mb-4 text-sm text-error">Songs could not be refreshed. <button type="button" onClick={() => void refetch()} disabled={isFetching} className="underline disabled:opacity-50">{isFetching ? "Retrying…" : "Retry"}</button></div>}
         {deleteError && <p role="alert" className="mb-3 text-sm text-error">{deleteError}</p>}
         <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
           {songs.map((song) => (

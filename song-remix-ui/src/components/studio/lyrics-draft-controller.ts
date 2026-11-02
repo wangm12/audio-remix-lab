@@ -31,10 +31,10 @@ let unloadListener: ((event: BeforeUnloadEvent) => void) | undefined;
 
 function syncUnloadProtection(): void {
   if (typeof window === "undefined") return;
-  const needed = [...owners.values()].some((owner) => owner.isDirty && owner.isSessionCurrent);
+  const needed = [...owners.values()].some((owner) => owner.isDirty && owner.isSessionAlive);
   if (needed && !unloadListener) {
     unloadListener = (event) => {
-      if (![...owners.values()].some((owner) => owner.isDirty && owner.isSessionCurrent)) return;
+      if (![...owners.values()].some((owner) => owner.isDirty && owner.isSessionAlive)) return;
       event.preventDefault();
       event.returnValue = "";
     };
@@ -80,6 +80,11 @@ export function getLyricsDraftOwner(
   return owner;
 }
 
+export function retireMissingSongDraft(songId: string, session: AuthSessionLease): void {
+  const owner = owners.get(`${sessionKey(session)}:${songId}`);
+  if (owner) owner.retireForMissingSong(session);
+}
+
 export class LyricsDraftOwner {
   private snapshot: LyricsDraftState;
   private readonly listeners = new Set<() => void>();
@@ -88,6 +93,7 @@ export class LyricsDraftOwner {
   private active = false;
   private hasServerSnapshot: boolean;
   private retired = false;
+  private missing = false;
   private queryClient: QueryClient | undefined;
   private requiresManualRetry = false;
   private prerequisiteError: Error | undefined;
@@ -131,6 +137,10 @@ export class LyricsDraftOwner {
   }
 
   get isSessionCurrent(): boolean {
+    return !this.retired && !this.missing && isAuthSessionCurrent(this.session);
+  }
+
+  get isSessionAlive(): boolean {
     return !this.retired && isAuthSessionCurrent(this.session);
   }
 
@@ -162,10 +172,12 @@ export class LyricsDraftOwner {
   }
 
   adoptServer(lyrics: string | null, revision: number): void {
+    const recoveringMissing = this.missing;
+    if (recoveringMissing && !this.retired && isAuthSessionCurrent(this.session)) this.missing = false;
     if (
       !this.isSessionCurrent
       || revision < this.snapshot.revision
-      || (revision === this.snapshot.revision && this.hasServerSnapshot)
+      || (revision === this.snapshot.revision && this.hasServerSnapshot && !recoveringMissing)
     ) return;
     this.hasServerSnapshot = true;
     const wasDirty = this.isDirty;
@@ -223,6 +235,24 @@ export class LyricsDraftOwner {
     this.runningGenerate?.reject(new Error("Your session changed. Sign in again before starting a remix."));
     this.runningGenerate = undefined;
     this.snapshot = { value: "", serverLyrics: null, revision: 0, sequence: 0, acknowledgedSequence: 0, status: "saved", error: null };
+    syncUnloadProtection();
+    for (const listener of this.listeners) listener();
+  }
+
+  retireForMissingSong(session: AuthSessionLease): void {
+    if (this.missing || this.retired || !sameSession(session, this.session) || !isAuthSessionCurrent(session)) return;
+    this.missing = true;
+    if (this.timer) clearTimeout(this.timer);
+    this.timer = undefined;
+    for (const job of this.jobs.splice(0)) {
+      if (job.kind === "generate") job.reject(new Error("This song no longer exists. Its lyrics draft is preserved locally."));
+      else for (const resolve of job.waiters) resolve();
+    }
+    for (const resolve of this.runningSave?.waiters ?? []) resolve();
+    this.runningSave = undefined;
+    this.runningGenerate?.reject(new Error("This song no longer exists. Its lyrics draft is preserved locally."));
+    this.runningGenerate = undefined;
+    this.snapshot = { ...this.snapshot, status: "error", error: "Song not found. Your lyrics draft is preserved locally and was not saved." };
     syncUnloadProtection();
     for (const listener of this.listeners) listener();
   }

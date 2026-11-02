@@ -1,9 +1,9 @@
 import { useEffect, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { useParams } from "@tanstack/react-router";
+import { useLocation, useParams } from "@tanstack/react-router";
 import { ArrowLeft, Loader2 } from "lucide-react";
 import { Link } from "@tanstack/react-router";
-import { api } from "@/lib/api";
+import { api, ApiError } from "@/lib/api";
 import { StylePicker } from "@/components/studio/StylePicker";
 import { EngineConfig } from "@/components/studio/EngineConfig";
 import { GeneratePanel } from "@/components/studio/GeneratePanel";
@@ -11,19 +11,30 @@ import { LyricsEditor } from "@/components/studio/LyricsEditor";
 import { TaskTimeline } from "@/components/library/TaskTimeline";
 import type { Preset, GenerateRequest, Song } from "@/lib/types";
 import { useTaskMonitor } from "@/components/layout/TaskMonitorContext";
-import { getSongReadSession, tagSongReadSession, useLyricsDraft } from "@/components/studio/lyrics-draft-controller";
+import { getSongReadSession, retireMissingSongDraft, tagSongReadSession, useLyricsDraft } from "@/components/studio/lyrics-draft-controller";
 import { captureAuthSession, isAuthSessionCurrent, type AuthSessionLease } from "@/lib/auth";
+
+const missingSongReadLeases = new WeakMap<object, { songId: string; queryKey: string; session: AuthSessionLease; generation: number }>();
 
 export function SongStudioPage() {
   const { songId } = useParams({ from: "/studio/$songId" });
+  const pathname = useLocation({ select: (location) => location.pathname });
   const monitor = useTaskMonitor();
-  const { data: songResult, isLoading } = useQuery({
+  const songQuery = useQuery({
     queryKey: ["song", songId],
-    queryFn: async ({ signal }) => {
+    queryFn: async ({ signal, queryKey }) => {
       const generation = monitor.captureGeneration();
       if (!monitor.isGenerationCurrent(generation)) throw new DOMException("Song request is no longer current", "AbortError");
       const session = captureAuthSession();
-      const song = await api.songs.getForSession(songId, session, signal);
+      let song: Song;
+      try {
+        song = await api.songs.getForSession(songId, session, signal);
+      } catch (error) {
+        if (error instanceof ApiError && error.status === 404 && !signal.aborted) {
+          missingSongReadLeases.set(error, { songId, queryKey: JSON.stringify(queryKey), session, generation });
+        }
+        throw error;
+      }
       if (!monitor.isGenerationCurrent(generation) || signal.aborted || !isAuthSessionCurrent(session)) {
         throw new DOMException("Song request is no longer current", "AbortError");
       }
@@ -31,25 +42,50 @@ export function SongStudioPage() {
       return visible ? tagSongReadSession(visible, session) : null;
     },
   });
-  const song = songResult;
+  const { data: song, isPending, isError, isFetching, refetch, error } = songQuery;
+  const isAuthoritativeNotFound = isError && error instanceof ApiError && error.status === 404;
 
-  if (isLoading) {
+  useEffect(() => {
+    if (!isAuthoritativeNotFound || !error || typeof error !== "object") return;
+    const lease = missingSongReadLeases.get(error);
+    if (!lease || lease.songId !== songId || lease.queryKey !== JSON.stringify(["song", songId]) || pathname !== `/studio/${songId}`) return;
+    if (!monitor.isGenerationCurrent(lease.generation) || !isAuthSessionCurrent(lease.session)) return;
+    retireMissingSongDraft(songId, lease.session);
+  }, [error, isAuthoritativeNotFound, monitor, pathname, songId]);
+
+  if (isPending && !song) {
     return (
-      <div className="flex items-center justify-center h-64">
+      <div role="status" aria-label="Loading song" className="flex items-center justify-center h-64">
         <Loader2 className="w-6 h-6 text-brand animate-spin" />
+        <span className="sr-only">Loading song…</span>
       </div>
     );
   }
 
-  if (!song) {
+  if (isAuthoritativeNotFound) {
     return (
       <div className="max-w-3xl mx-auto px-6 py-8">
         <p className="text-text-secondary">Song not found.</p>
+        <Link to="/library" className="inline-block mt-3 text-sm text-brand hover:underline">Back to Library</Link>
       </div>
     );
   }
 
-  return <SongStudio key={song.id} song={song} songSession={getSongReadSession(song) ?? captureAuthSession()} />;
+  if (isError && !song) {
+    return <div className="max-w-3xl mx-auto px-6 py-8 space-y-3">
+      <p role="alert" className="text-error">Unable to load this song.</p>
+      <button type="button" onClick={() => void refetch()} disabled={isFetching} className="px-3 py-2 rounded-lg bg-surface-2 text-sm font-medium disabled:opacity-50">{isFetching ? "Retrying…" : "Retry"}</button>
+    </div>;
+  }
+
+  if (!song) {
+    return <div className="max-w-3xl mx-auto px-6 py-8"><p className="text-text-secondary">Song not found.</p><Link to="/library" className="inline-block mt-3 text-sm text-brand hover:underline">Back to Library</Link></div>;
+  }
+
+  return <>
+    {isError && <div role="alert" className="max-w-3xl mx-auto px-6 pt-4 text-sm text-error">This song could not be refreshed. <button type="button" onClick={() => void refetch()} disabled={isFetching} className="underline disabled:opacity-50">{isFetching ? "Retrying…" : "Retry"}</button></div>}
+    <SongStudio key={song.id} song={song} songSession={getSongReadSession(song) ?? captureAuthSession()} />
+  </>;
 }
 
 function SongStudio({ song, songSession }: { song: Song; songSession: AuthSessionLease }) {

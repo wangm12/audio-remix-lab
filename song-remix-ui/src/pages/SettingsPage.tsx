@@ -5,10 +5,11 @@ import { CheckCircle2, XCircle } from "lucide-react";
 
 export function SettingsPage() {
   const { data: user } = useUser();
-  const { data: engines } = useQuery({
+  const enginesQuery = useQuery({
     queryKey: ["engines"],
     queryFn: api.engines.status,
   });
+  const { data: engines, isPending, isError, isFetching, refetch } = enginesQuery;
 
   return (
     <div className="max-w-2xl mx-auto px-6 py-8">
@@ -33,6 +34,9 @@ export function SettingsPage() {
           Engine status
         </h2>
         <div className="space-y-3">
+          {isPending && !engines && <p role="status" className="text-sm text-text-muted">Loading engine status…</p>}
+          {isError && !engines && <div role="alert" className="space-y-2 text-sm text-error"><p>Unable to load engine status.</p><button type="button" onClick={() => void refetch()} disabled={isFetching} className="px-3 py-2 rounded-lg bg-surface-2 font-medium disabled:opacity-50">{isFetching ? "Retrying…" : "Retry"}</button></div>}
+          {isError && engines && <p role="alert" className="text-sm text-error">Engine status could not be refreshed. <button type="button" onClick={() => void refetch()} disabled={isFetching} className="underline disabled:opacity-50">{isFetching ? "Retrying…" : "Retry"}</button></p>}
           {engines?.health.map((h) => (
             <div
               key={h.engine}
@@ -53,7 +57,7 @@ export function SettingsPage() {
               )}
             </div>
           ))}
-          {!engines?.health.length && (
+          {engines && !engines.health.length && (
             <p className="text-sm text-text-muted">No engines configured.</p>
           )}
         </div>

@@ -18,10 +18,11 @@ interface StylePickerProps {
 
 export function StylePicker({ selected, customPrompt, onSelect, onCustom }: StylePickerProps) {
   const [isCustom, setIsCustom] = useState(false);
-  const { data: presets, isLoading } = useQuery({
+  const presetsQuery = useQuery({
     queryKey: ["presets"],
     queryFn: api.presets.list,
   });
+  const { data: presets, isPending, isError, isFetching, refetch } = presetsQuery;
 
   const handlePresetClick = (preset: Preset) => {
     setIsCustom(false);
@@ -33,9 +34,10 @@ export function StylePicker({ selected, customPrompt, onSelect, onCustom }: Styl
     onCustom(customPrompt);
   };
 
-  if (isLoading) {
+  if (isPending && !presets) {
     return (
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+      <div role="status" aria-label="Loading styles" className="grid grid-cols-2 md:grid-cols-4 gap-3">
+        <span className="sr-only">Loading styles…</span>
         {Array.from({ length: 8 }).map((_, i) => (
           <div
             key={i}
@@ -88,6 +90,10 @@ export function StylePicker({ selected, customPrompt, onSelect, onCustom }: Styl
           </span>
         </button>
       </div>
+
+      {isError && !presets && <div role="alert" className="mt-3 text-sm text-error">Unable to load styles. <button type="button" onClick={() => void refetch()} disabled={isFetching} className="underline disabled:opacity-50">{isFetching ? "Retrying…" : "Retry"}</button></div>}
+      {isError && presets && <p role="alert" className="mt-3 text-sm text-error">Styles could not be refreshed. <button type="button" onClick={() => void refetch()} disabled={isFetching} className="underline disabled:opacity-50">{isFetching ? "Retrying…" : "Retry"}</button></p>}
+      {presets && !presets.length && <p className="mt-3 text-sm text-text-muted">No presets available. You can still use Custom.</p>}
 
       {isCustom && (
         <div className="mt-4 animate-fade-in-up">
