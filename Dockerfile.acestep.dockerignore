@@ -1,0 +1,45 @@
+# Secrets and private runtime configuration
+.env*
+**/.env*
+**/*.pem
+**/*.key
+**/secrets/
+**/private/
+**/runtime.env
+**/invite-code.txt
+
+# User media, model weights, and local caches
+data/
+**/data/
+/models/
+/checkpoints/
+acestep/checkpoints/
+**/*.safetensors
+**/*.ckpt
+**/*.pth
+**/*.pt
+**/*.onnx
+acestep-cache/
+**/.cache/
+music-mix/
+
+# Build and developer artifacts
+.git/
+.superpowers/
+.worktrees/
+**/.worktrees/
+node_modules/
+**/node_modules/
+**/.venv/
+**/__pycache__/
+**/*.py[cod]
+**/.pytest_cache/
+**/.ruff_cache/
+**/dist/
+**/build/
+*.log
+**/*.log
+*.sqlite*
+**/*.sqlite*
+
+# The ACE-Step submodule is included in this ACE image context only.

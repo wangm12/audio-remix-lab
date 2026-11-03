@@ -1,3 +1,4 @@
+import asyncio
 import json
 import logging
 import os
@@ -15,6 +16,7 @@ GENDER_HINTS = {
 }
 
 logger = logging.getLogger(__name__)
+POLL_RESULT_TIMEOUT_SECONDS = 300.0
 
 
 def _public_health_info(payload: object) -> dict:
@@ -98,10 +100,28 @@ class ACEStepEngine(AbstractEngine):
         return resp.json()["data"]["task_id"]
 
     async def poll_result(self, task_id: str) -> dict:
-        resp = await self.client.post(
-            f"{self.base_url}/query_result",
-            json={"task_id_list": [task_id]},
-        )
+        url = f"{self.base_url}/query_result"
+        payload = {"task_id_list": [task_id]}
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + POLL_RESULT_TIMEOUT_SECONDS
+
+        async with asyncio.timeout_at(deadline):
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                raise TimeoutError("ACE query_result poll exceeded its time budget")
+            try:
+                resp = await self.client.post(url, json=payload, timeout=remaining)
+            except httpx.ReadError as read_error:
+                logger.warning(
+                    "ACE query_result response read failed; retrying once (engine_task_id=%s)",
+                    task_id,
+                    exc_info=True,
+                )
+                remaining = deadline - loop.time()
+                if remaining <= 0:
+                    raise TimeoutError("ACE query_result poll exceeded its time budget") from read_error
+                resp = await self.client.post(url, json=payload, timeout=remaining)
+
         resp.raise_for_status()
         items = resp.json()["data"]
         if not items:

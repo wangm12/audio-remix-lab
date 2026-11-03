@@ -1,4 +1,5 @@
 import asyncio
+import logging
 import os
 import shutil
 import tempfile
@@ -142,6 +143,11 @@ async def _run_generation_impl(task_id: uuid.UUID, private_source: str | None = 
             try:
                 poll = await engine.poll_result(engine_task_id)
             except Exception as e:
+                logging.getLogger(__name__).exception(
+                    "Engine result poll failed (task_id=%s, engine_task_id=%s)",
+                    task_id,
+                    engine_task_id,
+                )
                 await _save_task_state(db, task_id, status="failed", error_message=f"Poll failed: {e}")
                 return
 

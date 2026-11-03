@@ -1,0 +1,29 @@
+# Review draft: dedicated Python 3.12/CUDA-wheel ACE-Step runtime.
+FROM python:3.12-slim-bookworm
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PIP_NO_CACHE_DIR=1
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      ffmpeg libgomp1 libstdc++6 ca-certificates \
+    && rm -rf /var/lib/apt/lists/* \
+    && groupadd --gid 1000 ace \
+    && useradd --uid 1000 --gid 1000 --create-home --home-dir /home/ace ace \
+    && install -d -o ace -g ace /opt/ace-step /home/ace/.cache
+
+WORKDIR /opt/ace-step
+COPY --chown=ace:ace acestep/ /opt/ace-step/
+COPY ace-cu126-linux-py312.lock /opt/ace-step/ace-cu126-linux-py312.lock
+
+RUN python -m pip install --no-cache-dir --requirement /opt/ace-step/ace-cu126-linux-py312.lock \
+    && rm -f /opt/ace-step/ace-cu126-linux-py312.lock \
+    && chown -R ace:ace /opt/ace-step
+
+ENV HOME=/home/ace
+USER 1000:1000
+EXPOSE 8001
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20m --retries=3 \
+  CMD python -c "import json,urllib.request; r=json.load(urllib.request.urlopen('http://127.0.0.1:8001/health',timeout=3)); d=r.get('data',r); assert d.get('models_initialized') is True and d.get('llm_initialized') is True" || exit 1
+CMD ["python", "-m", "uvicorn", "acestep.api_server:app", "--host", "0.0.0.0", "--port", "8001", "--workers", "1"]

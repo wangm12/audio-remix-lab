@@ -1,0 +1,123 @@
+name: audio-remix-lab-ubuntu-gpu
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    networks:
+      - remix-private
+    environment:
+      POSTGRES_DB: remix_backend_isolated
+      POSTGRES_USER: remix
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?Set DB_PASSWORD in .env.ubuntu-gpu}
+    volumes:
+      - backend_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U remix -d remix_backend_isolated"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+    labels:
+      com.audio-remix-lab.owner: codex-backend-docker-20261102
+      com.audio-remix-lab.project: ubuntu-model-stack
+
+  acestep:
+    image: audio-remix-lab/acestep:ubuntu-cu126
+    build:
+      context: .
+      dockerfile: Dockerfile.acestep
+    user: "1000:1000"
+    environment:
+      ACESTEP_API_HOST: 0.0.0.0
+      ACESTEP_API_PORT: "8001"
+      ACESTEP_CONFIG_PATH: acestep-v15-turbo
+      ACESTEP_DEVICE: cuda
+      ACESTEP_USE_FLASH_ATTENTION: "false"
+      ACESTEP_COMPILE_MODEL: "false"
+      ACESTEP_OFFLOAD_TO_CPU: "true"
+      ACESTEP_OFFLOAD_DIT_TO_CPU: "true"
+      ACESTEP_INIT_LLM: "true"
+      ACESTEP_LM_DEVICE: cpu
+      ACESTEP_LM_BACKEND: pt
+      ACESTEP_LM_MODEL_PATH: acestep-5Hz-lm-0.6B
+      ACESTEP_NO_INIT: "false"
+      ACESTEP_SAVE_MEMORY: "1"
+    volumes:
+      - ./acestep-cache/checkpoints:/opt/ace-step/checkpoints
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import json,urllib.request; r=json.load(urllib.request.urlopen('http://127.0.0.1:8001/health',timeout=3)); d=r.get('data',r); assert d.get('models_initialized') is True and d.get('llm_initialized') is True"]
+      interval: 30s
+      timeout: 5s
+      start_period: 20m
+      retries: 3
+    networks:
+      - remix-private
+    labels:
+      com.audio-remix-lab.owner: codex-backend-docker-20261102
+      com.audio-remix-lab.project: ubuntu-model-stack
+
+  backend:
+    image: audio-remix-lab/backend:ubuntu-amd64
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    networks:
+      - remix-private
+    depends_on:
+      postgres:
+        condition: service_healthy
+      acestep:
+        condition: service_healthy
+    env_file:
+      - .env.ubuntu-gpu
+    environment:
+      DATABASE_URL: postgresql+asyncpg://remix:${DB_PASSWORD:?Set DB_PASSWORD in .env.ubuntu-gpu}@postgres:5432/remix_backend_isolated
+      STORAGE_PATH: /var/lib/audio-remix-lab/storage
+      FRONTEND_DIST: /app/frontend-dist
+      CORS_ORIGINS: http://localhost:18000,http://127.0.0.1:18000
+      ACESTEP_API_BASE: http://acestep:8001
+    ports:
+      - "127.0.0.1:18000:8000"
+    volumes:
+      - backend_storage:/var/lib/audio-remix-lab/storage
+      - backend_model_cache:/home/app/.cache
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=2)"]
+      interval: 15s
+      timeout: 3s
+      start_period: 20s
+      retries: 5
+    labels:
+      com.audio-remix-lab.owner: codex-backend-docker-20261102
+      com.audio-remix-lab.project: ubuntu-model-stack
+
+volumes:
+  backend_pgdata:
+    labels:
+      com.audio-remix-lab.owner: codex-backend-docker-20261102
+      com.audio-remix-lab.project: ubuntu-model-stack
+  backend_storage:
+    labels:
+      com.audio-remix-lab.owner: codex-backend-docker-20261102
+      com.audio-remix-lab.project: ubuntu-model-stack
+  backend_model_cache:
+    labels:
+      com.audio-remix-lab.owner: codex-backend-docker-20261102
+      com.audio-remix-lab.project: ubuntu-model-stack
+
+networks:
+  remix-private:
+    driver: bridge

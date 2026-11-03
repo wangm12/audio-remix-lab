@@ -178,10 +178,52 @@ docker compose --env-file .env.backend -f docker-compose.backend.yml down
 
 `stop` 和 `down` 不会删除具名卷。除非明确要永久删除该隔离栈的数据库和媒体，否则不要在 `down` 后加 `-v`。使用 `up -d --build` 重建应用；重要更新前应备份 PostgreSQL 与存储卷。不要发布该栈的 8000 端口，也不要将其重新指向已有数据库。
 
+## Ubuntu GPU 独立试运行（实机验收完成）
+
+`docker-compose.ubuntu-gpu.yml` 定义独立 Ubuntu 项目，不修改 Mac/native ACE 配置和原 Linux CPU Compose 文件。应用只发布到 `127.0.0.1:18000`；PostgreSQL 与 ACE-Step 不发布主机端口。数据库和媒体使用新的具名卷，模型从 `acestep-cache/checkpoints/` 挂载。不要将此 profile 指向已有数据库、媒体目录或线上 Mac 服务。
+
+原生 Docker Engine 与 NVIDIA Container Toolkit 的安装是显式操作。在 Ubuntu 本地交互终端先查看脚本，再按需执行：
+
+```bash
+bash scripts/deploy/ubuntu-gpu/bootstrap-native-docker.sh
+bash scripts/deploy/ubuntu-gpu/bootstrap-native-docker.sh --install --add-docker-group --verify-gpu
+```
+
+第一条是只读 dry run。第二条会请求本机 sudo 授权、安装固定版本的 Engine/toolkit，并将当前用户加入 `docker` 组；该组拥有 root 等价主机控制权。不要通过管道执行，也不要在命令参数中传 sudo 密码。组成员变更后需要重新登录。此 profile 显式使用原生 Engine socket，不使用 Mac Docker Desktop CLI/context。
+
+初始化固定版本的 ACE-Step 子模块，将 `.env.ubuntu-gpu.example` 复制为私有 `.env.ubuntu-gpu`，并设置独立随机 `DB_PASSWORD` 与 `JWT_SECRET`。将这些公开组件目录复制到 `acestep-cache/checkpoints/`：`acestep-v15-turbo`、`vae`、`Qwen3-Embedding-0.6B` 和 `acestep-5Hz-lm-1.7B`。运行配置使用 CPU 上的公开 0.6B LM；ACE 模型清单同时需要 1.7B 目录。使用容器内 `huggingface_hub` 从公开仓库固定 revision 下载额外的 0.6B snapshot，不需要 Hugging Face token：
+
+```bash
+docker --host unix:///var/run/docker.sock compose --project-name audio-remix-lab-ubuntu-gpu -f docker-compose.ubuntu-gpu.yml --env-file .env.ubuntu-gpu run --rm --no-deps --entrypoint python acestep -c 'from huggingface_hub import snapshot_download; snapshot_download(repo_id="ACE-Step/acestep-5Hz-lm-0.6B", revision="148d8ea0225bdab342ee1ae3a354275ccd60ca80", local_dir="/opt/ace-step/checkpoints/acestep-5Hz-lm-0.6B", token=False)'
+```
+
+保留 tokenizer/config 文件；只排除各组件内的 `.cache/`、`__pycache__/`、精确名为 `token` 的文件和 `.env`。`REGISTRATION_INVITE_CODE` 留空时允许自行注册；若设置邀请码，请保存在私有 env 文件中，只通过可信私密渠道分享。ACE 镜像通过 pip 安装仓库固定的 Python 3.12/CUDA 12.6 lock；不要在 ACE 源码目录运行 `uv sync`。重新生成 lock 时使用 uv 0.13.6 和 `scripts/deploy/ubuntu-gpu/generate-lock.sh`。
+
+不要打印密钥，先校验配置，再构建 backend 与 ACE 两个镜像。Backend 使用稳定 tag `audio-remix-lab/backend:ubuntu-amd64`，从 `Dockerfile.backend` 构建；该 tag 与 Mac CPU 镜像 tag 分离。
+
+```bash
+docker --host unix:///var/run/docker.sock compose --project-name audio-remix-lab-ubuntu-gpu -f docker-compose.ubuntu-gpu.yml --env-file .env.ubuntu-gpu config --quiet
+docker --host unix:///var/run/docker.sock compose --project-name audio-remix-lab-ubuntu-gpu -f docker-compose.ubuntu-gpu.yml --env-file .env.ubuntu-gpu build backend acestep
+docker --host unix:///var/run/docker.sock compose --project-name audio-remix-lab-ubuntu-gpu -f docker-compose.ubuntu-gpu.yml --env-file .env.ubuntu-gpu up -d postgres
+# 等待 PostgreSQL healthy 后，仅对这个新数据库执行迁移与预设 seed。
+docker --host unix:///var/run/docker.sock compose --project-name audio-remix-lab-ubuntu-gpu -f docker-compose.ubuntu-gpu.yml --env-file .env.ubuntu-gpu run --rm --no-deps backend alembic upgrade head
+docker --host unix:///var/run/docker.sock compose --project-name audio-remix-lab-ubuntu-gpu -f docker-compose.ubuntu-gpu.yml --env-file .env.ubuntu-gpu run --rm --no-deps backend python seed_presets.py
+docker --host unix:///var/run/docker.sock compose --project-name audio-remix-lab-ubuntu-gpu -f docker-compose.ubuntu-gpu.yml --env-file .env.ubuntu-gpu up -d backend
+```
+
+Compose 会等待 ACE-Step 健康后再启动 backend。通过 SSH 本地端口转发访问；不要更改 Mac 站点、DNS、Cloudflare 或生产路由。停止项目时执行 `compose ... down`，不要加 `-v`，以保留独立数据卷。
+
+**Ubuntu 实机验收：**在 Ubuntu 26.04.1、i7-7700、16 GiB RAM、GTX 1070 8 GiB 上，原生 Engine/NVIDIA runtime 成功识别 GPU。FP16/FP32 CUDA kernel 与真实 MP3 codec 路径通过。ACE-Step 在 CPU offload 下初始化 turbo 模型，并在 CPU FP32 上加载 0.6B PyTorch LM。冷启动 30 秒 cover 全流程在 27.63 秒内通过，并返回 finite 的 30 秒 MP3；媒体 owner、Range、SSE 与隐私检查均通过。单独的 10 秒 CoT text-to-music 请求实际执行了 CPU LM forward：phase-one metadata 阶段耗时 25.62 秒，总计 38.43 秒返回 finite 的 10 秒 MP3。
+
+cover 验收中曾观察到一次 `/query_result` `httpx.ReadError`，当时 ACE 后续仍完成了上游任务。Backend 现在会在同一个 300 秒单次 poll deadline 内，对这个只读查询最多再发一次 HTTP 请求；第二次读错误及其他错误仍按失败处理。连接中断的底层原因尚未确定。原有轮询仍是 120 次、每次间隔 5 秒；文档不将其描述为严格墙钟 deadline。ACE 容器观测到的 cgroup memory 峰值约 13.2 GiB（14.15 GB），包含文件缓存和初始化占用，并非单指进程 RSS；因此 16 GiB 主机的内存余量有限。该栈始终独立，没有切换 Mac 站点、数据库、DNS、Cloudflare 或生产路由。
+
 ### 引擎与验证边界
 
-后端容器配置为通过 `host.docker.internal:8001` 调用 Mac 主机上的 ACE-Step。需要 MLX 加速时，ACE-Step 应作为 Apple Silicon 上的原生进程运行；macOS 容器无法使用 Metal。本次从容器访问配置的主机路由成功，但只检查了 ACE-Step 健康接口。在 Apple Silicon Docker Desktop 上，ARM64 镜像已成功构建，包含 Node 24 UI 资源和 Python 3.12 后端。`pip check` 通过；镜像使用 CPU-only PyTorch（`torch.version.cuda` 为 `None`）和 MLX CPU 包，未安装 CUDA/NVIDIA distributions；MLX `0.32.4`、`mlx-cpu 0.32.4` 和 `mlx-audio-io 1.3.24` 均成功导入，MLX CPU array 求值通过。独立验收通过了 58 项 runtime/API gates，以及使用全新隔离 PostgreSQL 的 18 项测试。禁用网络后，使用合成 22050 Hz 单声道 WAV 经 Linux 歌词路径解码并重采样到 44100 Hz；带随机权重的缩小 HTDemucs 实际执行了 CPU forward、STFT/ISTFT 和 RMS。该独立声学探针没有导入 MLX core，也没有下载模型权重。预训练 Demucs 分离、原生 ACE-Step 生成、输出质量、速度和歌词结构化 endpoint 均未验证。隔离栈中 PostgreSQL 状态健康，Alembic 到达 revision `9f0a7c1d2e43`，显式 seed 插入 8 个预设。API/SPA 健康检查、登录、创建歌曲、WAV 上传与存储，以及临时合成 MP3 媒体响应和 HTTP Range 206 均已实测；临时测试用户、记录与文件均已清理。容器通过 ACE-Step 主机健康接口检查并得到 healthy 响应。镜像仅在 ARM64 上验证，AMD64 未验证。
+以下仅描述上方独立 Linux CPU Docker profile，不适用于 Ubuntu GPU 试运行。该 profile 的后端容器通过 `host.docker.internal:8001` 调用 Mac 主机上的 ACE-Step。需要 MLX 加速时，ACE-Step 应作为 Apple Silicon 上的原生进程运行；macOS 容器无法使用 Metal。本次从容器访问该主机路由成功，但只检查了 ACE-Step 健康接口。
 
+在 Apple Silicon Docker Desktop 上，ARM64 镜像已成功构建，包含 Node 24 UI 资源和 Python 3.12 后端。`pip check` 通过；镜像使用 CPU-only PyTorch（`torch.version.cuda` 为 `None`）和 MLX CPU 包，未安装 CUDA/NVIDIA distributions。MLX `0.32.4`、`mlx-cpu 0.32.4` 和 `mlx-audio-io 1.3.24` 均成功导入，MLX CPU array 求值通过。独立验收通过了 58 项 runtime/API gates，以及使用全新隔离 PostgreSQL 的 18 项测试。禁用网络后，合成 22050 Hz 单声道 WAV 经 Linux 歌词路径解码并重采样到 44100 Hz；带随机权重的缩小 HTDemucs 实际执行了 CPU forward、STFT/ISTFT 和 RMS。该独立探针没有导入 MLX core，也没有下载模型权重。隔离栈中 PostgreSQL 健康，Alembic 到达 revision `9f0a7c1d2e43`，显式 seed 插入 8 个预设。API/SPA 健康检查、登录、创建歌曲、WAV 上传与存储，以及临时合成 MP3 媒体响应和 HTTP Range 206 均已实测；临时测试用户、记录与文件均已清理。
+
+预训练 Demucs 分离、CPU profile 经 Mac ACE 路由的真实生成与输出质量/速度，以及歌词结构化 endpoint 尚未验证。该 CPU profile 在 Apple Silicon Docker Desktop 上验证过；在 AMD64 Docker Desktop 上使用 Mac 主机路由的行为仍未验证。Ubuntu GPU profile 的实测结果见上一节。
 ## 测试与数据库安全
 
 **不要对可能包含用户数据的数据库运行通用 `make test` 或 `pytest` 命令。** 后端测试设置了自动 fixture：重建配置的测试数据库、应用迁移，并在每个测试前清空表。`tests/conftest.py` 会先导入 `tests._env`，在应用模块加载前设置测试环境。任何自定义测试入口都必须保留此导入顺序。

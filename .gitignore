@@ -1,5 +1,6 @@
 .env
 .env.backend
+.env.ubuntu-gpu
 data/
 node_modules/
 __pycache__/

@@ -1,5 +1,6 @@
 import asyncio
 import io
+import logging
 import threading
 import uuid
 from pathlib import Path
@@ -370,6 +371,41 @@ async def test_generate_snapshots_lyrics_and_hides_internal_snapshot(client, db,
     assert engine.lyrics == ""
     await db.refresh(task)
     assert task.engine_params["_input_snapshot"] == {"version": 1, "lyrics": ""}
+
+
+async def test_poll_exception_with_empty_message_is_logged_and_keeps_failure_state(
+    client, db, monkeypatch, caplog
+):
+    alice = await register_user(client)
+    song = await create_song(client, alice)
+    task_id = await insert_task(alice.id, song["id"], status="pending")
+    upstream_task_id = "upstream-task-123"
+
+    class FailingEngine:
+        async def submit_cover(self, **kwargs):
+            return upstream_task_id
+
+        async def poll_result(self, engine_task_id):
+            raise AssertionError("")
+
+    monkeypatch.setattr(engine_manager, "get", lambda _: FailingEngine())
+    caplog.set_level(logging.ERROR, logger="app.services.task_service")
+
+    await run_generation(task_id)
+
+    record = next(
+        record for record in caplog.records if "Engine result poll failed" in record.getMessage()
+    )
+    assert record.exc_info is not None
+    assert record.exc_info[0] is AssertionError
+    assert str(record.exc_info[1]) == ""
+    assert str(task_id) in record.getMessage()
+    assert upstream_task_id in record.getMessage()
+
+    task = await db.get(GenerationTask, uuid.UUID(task_id))
+    await db.refresh(task)
+    assert task.status == "failed"
+    assert task.error_message == "Poll failed: "
 
 
 async def test_lyrics_revision_cas_increments_explicit_noop_and_rejects_stale_write(client):
