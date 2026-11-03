@@ -215,7 +215,7 @@ dc logs --tail=100 backend cloudflared
 
 使用当前环境重启 backend：`dc restart backend`。若修改了私有环境变量，应重建 backend 以重新读取配置：`dc up -d --no-deps --force-recreate backend`。启动或重建公网 tunnel connector：`dc --profile public up -d cloudflared`。服务配置为 `restart: unless-stopped`；原生 Docker Engine 已设置为开机启动。Ubuntu 主机已配置为不自动休眠。尚未通过实际主机重启进行端到端验证。
 
-已部署 backend 设置 `COOKIE_SECURE=true`。Cloudflare 标准代理的请求体上限是 100 MB，应用上限为 128 MiB，因此通过公网域名上传时可能受 Cloudflare 限制。GTX 1070 主机有 16 GiB RAM；ACE-Step cgroup 观测峰值约 13.2 GiB，包含文件缓存和初始化占用。已验证短时 10 秒和 30 秒流程；这不能证明长曲或并发生成的承载能力。请留意 SSD 剩余空间和容器健康状态。不要再添加会将流量路由到不同数据库的 connector。
+已部署 backend 设置 `COOKIE_SECURE=true`。Cloudflare Free/Pro 套餐的代理请求体上限默认是 100 MB，实际限制取决于账户套餐和 zone 配置。应用自身 128 MiB 的上传限制与此独立。GTX 1070 主机有 16 GiB RAM；ACE-Step cgroup 观测峰值约 13.2 GiB，包含文件缓存和初始化占用。已验证短时 10 秒和 30 秒流程；这不能证明长曲或并发生成的承载能力。请留意 SSD 剩余空间和容器健康状态。不要再添加会将流量路由到不同数据库的 connector。
 
 ### 独立 Ubuntu GPU profile 设置与验证
 
