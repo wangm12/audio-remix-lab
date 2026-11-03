@@ -1,0 +1,69 @@
+name: audio-remix-lab-backend-isolated
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: remix_backend_isolated
+      POSTGRES_USER: remix
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?Set DB_PASSWORD in .env.backend}
+    volumes:
+      - backend_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U remix -d remix_backend_isolated"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    labels:
+      com.audio-remix-lab.owner: codex-backend-docker-20261102
+      com.audio-remix-lab.project: backend-isolated
+
+  backend:
+    image: audio-remix-lab/backend:local
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    depends_on:
+      postgres:
+        condition: service_healthy
+    env_file:
+      - .env.backend
+    environment:
+      DATABASE_URL: postgresql+asyncpg://remix:${DB_PASSWORD:?Set DB_PASSWORD in .env.backend}@postgres:5432/remix_backend_isolated
+      STORAGE_PATH: /var/lib/audio-remix-lab/storage
+      FRONTEND_DIST: /app/frontend-dist
+      CORS_ORIGINS: http://localhost:18000,http://127.0.0.1:18000
+      ACESTEP_API_BASE: http://host.docker.internal:8001
+    ports:
+      - "127.0.0.1:18000:8000"
+    volumes:
+      - backend_storage:/var/lib/audio-remix-lab/storage
+      - backend_model_cache:/home/app/.cache
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=2)"]
+      interval: 15s
+      timeout: 3s
+      start_period: 20s
+      retries: 5
+    labels:
+      com.audio-remix-lab.owner: codex-backend-docker-20261102
+      com.audio-remix-lab.project: backend-isolated
+
+volumes:
+  backend_pgdata:
+    labels:
+      com.audio-remix-lab.owner: codex-backend-docker-20261102
+      com.audio-remix-lab.project: backend-isolated
+  backend_storage:
+    labels:
+      com.audio-remix-lab.owner: codex-backend-docker-20261102
+      com.audio-remix-lab.project: backend-isolated
+  backend_model_cache:
+    labels:
+      com.audio-remix-lab.owner: codex-backend-docker-20261102
+      com.audio-remix-lab.project: backend-isolated

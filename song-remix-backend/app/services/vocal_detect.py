@@ -1,7 +1,7 @@
 """
-Vocal detection service: extracts vocals via Demucs-MLX, detects instrumental
-gaps (interludes) via RMS energy analysis, and inserts [Interlude] markers
-into user-provided lyrics at the correct positions.
+Vocal detection service: extracts vocals via Demucs, detects instrumental gaps
+(interludes) via RMS energy analysis, and inserts [Interlude] markers into
+user-provided lyrics at the correct positions.
 """
 
 from __future__ import annotations
@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+import sys
 from functools import lru_cache
 
 import numpy as np
@@ -28,6 +29,11 @@ MARKER_RE = re.compile(
 
 @lru_cache(maxsize=1)
 def _get_separator():
+    if sys.platform == "linux":
+        from demucs.api import Separator
+
+        return Separator(model="htdemucs", device="cpu")
+
     from demucs_mlx import Separator
 
     return Separator()
@@ -38,7 +44,9 @@ def _extract_vocals_sync(audio_path: str) -> tuple[np.ndarray, int]:
     separator = _get_separator()
     _origin, stems = separator.separate_audio_file(audio_path)
     vocals = stems["vocals"]
-    if hasattr(vocals, "__array__"):
+    if hasattr(vocals, "detach"):
+        vocals = vocals.detach().cpu().numpy().copy()
+    elif hasattr(vocals, "__array__"):
         vocals = np.array(vocals)
     if vocals.ndim == 2:
         vocals = vocals.mean(axis=0)

@@ -1,0 +1,63 @@
+# syntax=docker/dockerfile:1
+
+FROM node:24-bookworm-slim AS frontend-build
+WORKDIR /build/song-remix-ui
+COPY song-remix-ui/package.json song-remix-ui/package-lock.json ./
+RUN npm ci
+COPY song-remix-ui/ ./
+RUN npm run build
+
+FROM python:3.12-slim-bookworm AS backend-deps
+ENV PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PIP_NO_CACHE_DIR=1 \
+    CXX=g++ \
+    CXXFLAGS=-std=c++20
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        build-essential \
+        cmake \
+        ninja-build \
+        pkg-config \
+        libopus-dev \
+        libavformat-dev \
+        libavcodec-dev \
+        libavutil-dev \
+        libswresample-dev \
+    && rm -rf /var/lib/apt/lists/* \
+    && cmake --version | head -n 1
+WORKDIR /build/backend
+COPY song-remix-backend/requirements.txt song-remix-backend/requirements.lock ./
+RUN python -m pip install --prefix=/install \
+        --extra-index-url https://download.pytorch.org/whl/cpu \
+        'torch==2.15.0+cpu' \
+        -r requirements.txt \
+        -c requirements.lock
+
+FROM python:3.12-slim-bookworm AS runtime
+LABEL com.audio-remix-lab.owner="codex-backend-docker-20261102" \
+      com.audio-remix-lab.project="backend-isolated"
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PATH=/usr/local/bin:$PATH \
+    STORAGE_PATH=/var/lib/audio-remix-lab/storage \
+    FRONTEND_DIST=/app/frontend-dist \
+    HOME=/home/app
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        ffmpeg \
+        libgomp1 \
+        libstdc++6 \
+    && rm -rf /var/lib/apt/lists/* \
+    && groupadd --system --gid 10001 app \
+    && useradd --system --uid 10001 --gid app --create-home --home-dir /home/app app \
+    && install -d -o app -g app /app /var/lib/audio-remix-lab/storage /home/app/.cache
+COPY --from=backend-deps /install/ /usr/local/
+WORKDIR /app/backend
+COPY --chown=app:app song-remix-backend/app/ ./app/
+COPY --chown=app:app song-remix-backend/alembic/ ./alembic/
+COPY --chown=app:app song-remix-backend/alembic.ini ./alembic.ini
+COPY --chown=app:app song-remix-backend/seed_presets.py ./seed_presets.py
+COPY --from=frontend-build --chown=app:app /build/song-remix-ui/dist/ /app/frontend-dist/
+USER app:app
+EXPOSE 8000
+HEALTHCHECK --interval=15s --timeout=3s --start-period=20s --retries=5 \
+    CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=2)" || exit 1
+CMD ["python", "-m", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
