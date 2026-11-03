@@ -1,0 +1,47 @@
+services:
+  backend:
+    env_file:
+      - .env.ubuntu-gpu
+      - /home/frank/.config/audio-remix-lab/production-app.env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://remix:${DB_PASSWORD:?Set DB_PASSWORD in .env.ubuntu-gpu}@postgres:5432/${PRODUCTION_DB_NAME:?Set PRODUCTION_DB_NAME in production-compose.env}
+      STORAGE_PATH: /var/lib/audio-remix-lab/storage
+      CORS_ORIGINS: http://localhost:18000,http://127.0.0.1:18000
+      FORWARDED_ALLOW_IPS: 172.18.0.1
+      COOKIE_SECURE: "true"
+    volumes:
+      - backend_production_storage:/var/lib/audio-remix-lab/storage
+
+  cloudflared:
+    image: cloudflare/cloudflared:2026.10.7@sha256:32f933aa6fe1f69c5885b93f3c92cc3f60cca8f0530868bc3bc2cc446114a385
+    profiles:
+      - public
+    user: "1000:1000"
+    command:
+      - tunnel
+      - --config
+      - /etc/cloudflared/config.yml
+      - --metrics
+      - 127.0.0.1:20241
+      - --no-autoupdate
+      - run
+      - f899b36d-d416-4213-8536-5b3d9cb98892
+    volumes:
+      - type: bind
+        source: /home/frank/.config/audio-remix-lab/cloudflared
+        target: /etc/cloudflared
+        read_only: true
+        bind:
+          create_host_path: false
+    network_mode: host
+    depends_on:
+      backend:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  backend_production_storage:
+    name: ${PRODUCTION_STORAGE_VOLUME:?Set PRODUCTION_STORAGE_VOLUME in production-compose.env}
+    labels:
+      com.audio-remix-lab.owner: codex-backend-docker-20261102
+      com.audio-remix-lab.project: ubuntu-model-stack

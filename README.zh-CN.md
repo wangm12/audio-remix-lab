@@ -4,7 +4,7 @@
 
 Song Remix Studio 是一个自托管应用，用于管理源歌曲、歌词、风格预设和 remix 生成任务。Web 应用与 API 在本仓库中运行；音频推理由单独运行的 ACE-Step 1.5 服务提供。本仓库包含固定版本的 ACE-Step 子模块，用于 Apple Silicon 原生运行路径。
 
-> **项目状态：** 项目仍在开发中。现已提供隔离的 Linux CPU Docker 后端供评估使用。构建镜像不会迁移或替换任何已有安装。向网络开放服务前，请先阅读下方限制。
+> **项目状态：** 项目仍在开发中。公网部署运行在专用 Ubuntu 主机上：Web 应用、API、PostgreSQL、ACE-Step 推理服务和 Cloudflare Named Tunnel 都在 Ubuntu 上运行，Mac 不需要保持开机。隔离的 Linux CPU Docker 后端仍可用于评估。依赖长音频或并发生成前，请先阅读下方部署限制。
 
 ## 各部分的职责
 
@@ -109,6 +109,14 @@ Make 配方默认使用 `.env`；`ENV_FILE=path` 可为 Make 命令指定其他�
 
 删除已安装环境（`node_modules`、`.venv`）、模型权重、PostgreSQL 数据卷或应用存储，不属于日常缓存清理。环境可以重装；模型需要重新下载；数据库或媒体删除可能永久丢失用户数据。Vite、pytest、Ruff 和 Python 字节码等工具缓存可重建，但运行中的进程可能正在使用它们。本 README 不建议一键清空缓存，也不声称已释放任何磁盘空间。
 
+### 当前 Ubuntu 生产数据与磁盘布局
+
+公网 `https://remix.mingjie-hanlu.com` 由下方介绍的 Ubuntu production Compose overlay 提供服务。生产使用数据库 `remix_backend_production` 和具名卷 `audio-remix-lab-ubuntu-gpu_backend_production_storage`；较早的隔离数据库和数据卷仍独立保留。应用、ACE-Step 模型、PostgreSQL 和 tunnel connector 都运行在 Ubuntu 上，Mac 是否开机及其本地模型缓存都不是运行依赖。
+
+Ubuntu 主机有一块挂载为 `/` 的 256 GB SSD（约 238 GiB）；ACE-Step 检查点保存在这块 SSD 上的持久目录 `acestep-cache/checkpoints/` 中。本次盘点时 `/` 约有 149 GiB 可用。现有 1 TB HDD 尚未分区或挂载，也未识别到 512 GB 设备。生产媒体仍存放在 Docker 具名卷中。本次部署未对这块 1 TB HDD 分区、格式化或挂载，也未将模型或媒体迁入该 HDD；公网业务数据已复制到 Ubuntu 系统盘上的生产数据库和媒体卷。规划模型或媒体迁移前先检查当前剩余空间；迁移必须保留数据库中的绝对输出路径及其引用的所有文件。
+
+Mac 上的源数据是切换前快照。用户在 Ubuntu 创建或更新数据后，若将 DNS 或 tunnel 切回旧 Mac，Mac 会提供过期的数据库和媒体状态，并可能丢失切换后的写入。若需回滚同时保留这些写入，必须协调备份/恢复或反向数据迁移；仅停止 Ubuntu 栈不会让 Mac 快照变成最新状态。
+
 ## 配置与安全
 
 原生开发从 `.env.example` 开始，使用 `make env`。Docker 则复制 `.env.backend.example` 为 `.env.backend`，将占位数据库密码和 JWT secret 换成私有随机值；如需限制注册，再设置邀请码。两个文件都应保密，不能提交密钥。
@@ -178,9 +186,40 @@ docker compose --env-file .env.backend -f docker-compose.backend.yml down
 
 `stop` 和 `down` 不会删除具名卷。除非明确要永久删除该隔离栈的数据库和媒体，否则不要在 `down` 后加 `-v`。使用 `up -d --build` 重建应用；重要更新前应备份 PostgreSQL 与存储卷。不要发布该栈的 8000 端口，也不要将其重新指向已有数据库。
 
-## Ubuntu GPU 独立试运行（实机验收完成）
+## Ubuntu 部署与 GPU 验证
 
-`docker-compose.ubuntu-gpu.yml` 定义独立 Ubuntu 项目，不修改 Mac/native ACE 配置和原 Linux CPU Compose 文件。应用只发布到 `127.0.0.1:18000`；PostgreSQL 与 ACE-Step 不发布主机端口。数据库和媒体使用新的具名卷，模型从 `acestep-cache/checkpoints/` 挂载。不要将此 profile 指向已有数据库、媒体目录或线上 Mac 服务。
+### 公网生产日常操作
+
+公网域名 `https://remix.mingjie-hanlu.com` 经现有 Cloudflare Named Tunnel 指向 Ubuntu 主机。Cloudflare Tunnel、应用/API、PostgreSQL 和 ACE-Step 都运行在该主机上；应用 origin 为 `127.0.0.1:18000`。此前 Mac 上的 API 和 tunnel connector 已停止。生产部署由基础 `docker-compose.ubuntu-gpu.yml` 与 `docker-compose.ubuntu-production.yml` 组合而成；不要在生产环境执行下方隔离 profile 的命令。
+
+SSH 连接 `frank@frank-ubuntu.local`，然后在 shell 中定义此 helper，以选择生产 Compose 栈。它显式使用原生 Docker Engine socket，并读取私有 env 文件，不会打印文件内容：
+
+```bash
+cd /home/frank/audio-remix-lab-ubuntu
+dc() {
+  /usr/bin/docker --host unix:///var/run/docker.sock compose \
+    --env-file .env.ubuntu-gpu \
+    --env-file /home/frank/.config/audio-remix-lab/production-compose.env \
+    -f docker-compose.ubuntu-gpu.yml \
+    -f docker-compose.ubuntu-production.yml "$@"
+}
+```
+
+生产私有文件位于 `/home/frank/.config/audio-remix-lab/`，目录权限为 `700`、文件权限为 `600`；不要将内容复制到 Git 或日志中。production overlay 还会读取该目录下的 `production-app.env` 和只读 Cloudflare 配置。查看状态、健康检查和最近日志：
+
+```bash
+dc ps
+curl --fail http://127.0.0.1:18000/api/health
+dc logs --tail=100 backend cloudflared
+```
+
+使用当前环境重启 backend：`dc restart backend`。若修改了私有环境变量，应重建 backend 以重新读取配置：`dc up -d --no-deps --force-recreate backend`。启动或重建公网 tunnel connector：`dc --profile public up -d cloudflared`。服务配置为 `restart: unless-stopped`；原生 Docker Engine 已设置为开机启动。Ubuntu 主机已配置为不自动休眠。尚未通过实际主机重启进行端到端验证。
+
+已部署 backend 设置 `COOKIE_SECURE=true`。Cloudflare 标准代理的请求体上限是 100 MB，应用上限为 128 MiB，因此通过公网域名上传时可能受 Cloudflare 限制。GTX 1070 主机有 16 GiB RAM；ACE-Step cgroup 观测峰值约 13.2 GiB，包含文件缓存和初始化占用。已验证短时 10 秒和 30 秒流程；这不能证明长曲或并发生成的承载能力。请留意 SSD 剩余空间和容器健康状态。不要再添加会将流量路由到不同数据库的 connector。
+
+### 独立 Ubuntu GPU profile 设置与验证
+
+`docker-compose.ubuntu-gpu.yml` 是生产 overlay 使用的 Ubuntu 基础项目，也可单独用于隔离评估。应用只发布到 `127.0.0.1:18000`；PostgreSQL 与 ACE-Step 不发布主机端口。生产 overlay 会选用独立数据库和存储卷。不要让隔离 profile 连接生产数据库、媒体卷或公网 tunnel。
 
 原生 Docker Engine 与 NVIDIA Container Toolkit 的安装是显式操作。在 Ubuntu 本地交互终端先查看脚本，再按需执行：
 
@@ -211,15 +250,15 @@ docker --host unix:///var/run/docker.sock compose --project-name audio-remix-lab
 docker --host unix:///var/run/docker.sock compose --project-name audio-remix-lab-ubuntu-gpu -f docker-compose.ubuntu-gpu.yml --env-file .env.ubuntu-gpu up -d backend
 ```
 
-Compose 会等待 ACE-Step 健康后再启动 backend。通过 SSH 本地端口转发访问；不要更改 Mac 站点、DNS、Cloudflare 或生产路由。停止项目时执行 `compose ... down`，不要加 `-v`，以保留独立数据卷。
+Compose 会等待 ACE-Step 健康后再启动 backend。隔离评估时通过 SSH 本地端口转发访问。停止此独立 profile 时执行 `compose ... down`，不要加 `-v`，以保留其数据卷。
 
 **Ubuntu 实机验收：**在 Ubuntu 26.04.1、i7-7700、16 GiB RAM、GTX 1070 8 GiB 上，原生 Engine/NVIDIA runtime 成功识别 GPU。FP16/FP32 CUDA kernel 与真实 MP3 codec 路径通过。ACE-Step 在 CPU offload 下初始化 turbo 模型，并在 CPU FP32 上加载 0.6B PyTorch LM。冷启动 30 秒 cover 全流程在 27.63 秒内通过，并返回 finite 的 30 秒 MP3；媒体 owner、Range、SSE 与隐私检查均通过。单独的 10 秒 CoT text-to-music 请求实际执行了 CPU LM forward：phase-one metadata 阶段耗时 25.62 秒，总计 38.43 秒返回 finite 的 10 秒 MP3。
 
-cover 验收中曾观察到一次 `/query_result` `httpx.ReadError`，当时 ACE 后续仍完成了上游任务。Backend 现在会在同一个 300 秒单次 poll deadline 内，对这个只读查询最多再发一次 HTTP 请求；第二次读错误及其他错误仍按失败处理。连接中断的底层原因尚未确定。原有轮询仍是 120 次、每次间隔 5 秒；文档不将其描述为严格墙钟 deadline。ACE 容器观测到的 cgroup memory 峰值约 13.2 GiB（14.15 GB），包含文件缓存和初始化占用，并非单指进程 RSS；因此 16 GiB 主机的内存余量有限。该栈始终独立，没有切换 Mac 站点、数据库、DNS、Cloudflare 或生产路由。
+cover 验收中曾观察到一次 `/query_result` `httpx.ReadError`，当时 ACE 后续仍完成了上游任务。Backend 现在会在同一个 300 秒单次 poll deadline 内，对这个只读查询最多再发一次 HTTP 请求；第二次读错误及其他错误仍按失败处理。连接中断的底层原因尚未确定。原有轮询仍是 120 次、每次间隔 5 秒；文档不将其描述为严格墙钟 deadline。ACE 容器观测到的 cgroup memory 峰值约 13.2 GiB（14.15 GB），包含文件缓存和初始化占用，并非单指进程 RSS；因此 16 GiB 主机的内存余量有限。
 
 ### 引擎与验证边界
 
-以下仅描述上方独立 Linux CPU Docker profile，不适用于 Ubuntu GPU 试运行。该 profile 的后端容器通过 `host.docker.internal:8001` 调用 Mac 主机上的 ACE-Step。需要 MLX 加速时，ACE-Step 应作为 Apple Silicon 上的原生进程运行；macOS 容器无法使用 Metal。本次从容器访问该主机路由成功，但只检查了 ACE-Step 健康接口。
+以下仅描述上方独立 Linux CPU Docker profile，不适用于 Ubuntu GPU 部署。该 profile 的后端容器通过 `host.docker.internal:8001` 调用 Mac 主机上的 ACE-Step。需要 MLX 加速时，ACE-Step 应作为 Apple Silicon 上的原生进程运行；macOS 容器无法使用 Metal。本次从容器访问该主机路由成功，但只检查了 ACE-Step 健康接口。
 
 在 Apple Silicon Docker Desktop 上，ARM64 镜像已成功构建，包含 Node 24 UI 资源和 Python 3.12 后端。`pip check` 通过；镜像使用 CPU-only PyTorch（`torch.version.cuda` 为 `None`）和 MLX CPU 包，未安装 CUDA/NVIDIA distributions。MLX `0.32.4`、`mlx-cpu 0.32.4` 和 `mlx-audio-io 1.3.24` 均成功导入，MLX CPU array 求值通过。独立验收通过了 58 项 runtime/API gates，以及使用全新隔离 PostgreSQL 的 18 项测试。禁用网络后，合成 22050 Hz 单声道 WAV 经 Linux 歌词路径解码并重采样到 44100 Hz；带随机权重的缩小 HTDemucs 实际执行了 CPU forward、STFT/ISTFT 和 RMS。该独立探针没有导入 MLX core，也没有下载模型权重。隔离栈中 PostgreSQL 健康，Alembic 到达 revision `9f0a7c1d2e43`，显式 seed 插入 8 个预设。API/SPA 健康检查、登录、创建歌曲、WAV 上传与存储，以及临时合成 MP3 媒体响应和 HTTP Range 206 均已实测；临时测试用户、记录与文件均已清理。
 

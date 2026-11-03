@@ -4,7 +4,7 @@
 
 Song Remix Studio is a self-hosted application for managing source songs, lyrics, presets, and remix-generation tasks. The web app and API run in this repository; audio inference is delegated to a separately running ACE-Step 1.5 service. This repository includes a pinned ACE-Step submodule for the native Apple Silicon path.
 
-> **Status:** This project is under active development. An isolated Linux CPU Docker backend is available for evaluation. Building an image does not migrate or replace any existing installation. Review the limitations below before exposing a service to a network.
+> **Status:** This project is under active development. The public deployment runs on a dedicated Ubuntu host: the web app, API, PostgreSQL, ACE-Step inference service, and Cloudflare Named Tunnel all run there. The Mac is not required to stay on. The isolated Linux CPU Docker backend remains available for evaluation. Review the deployment limits below before relying on longer or concurrent generation jobs.
 
 ## What runs where
 
@@ -49,7 +49,7 @@ The Docker image's Linux MLX CPU dependencies are distinct from the native macOS
 
 The pinned Demucs-MLX integration is used on native macOS; its upstream lists Linux as untested ([platform notes](https://github.com/ssmall256/demucs-mlx/blob/9950c7daaa6ee3cf9622005e8be350c6c0163142/docs/platform.md)). In the Linux container, CPU STFT through `mlx-spectro` fails because Metal is unavailable, so lyric structuring selects the official PyTorch Demucs API with `model="htdemucs"` and `device="cpu"`. The image does not include pretrained HTDemucs weights. They use a separate PyTorch cache; do not assume converted MLX weights can be reused directly. First real use may download the weights into the persistent `backend_model_cache` volume. Real pretrained-model inference, quality, speed, and lyric-structuring endpoint behavior have not been validated.
 
-The project does not currently certify a GeForce GTX 1070 setup. The Docker CPU image does not provide GPU acceleration for that card.
+The Docker CPU image does not provide GPU acceleration. The separate Ubuntu GPU profile and public deployment were validated on the GTX 1070 host described below.
 
 ## Native development quick start
 
@@ -108,6 +108,14 @@ Set `STORAGE_PATH` to an explicit, durable directory before storing user media. 
 The database stores absolute filesystem paths for existing generated output records (`output_audio_path`). A Docker volume mounted at a new container path does not make those old paths valid inside the container. Moving an existing installation requires a separately reviewed migration that coordinates database path values, all referenced media files, ownership/permissions, backups, and rollback. Do **not** point a fresh Docker backend at an existing live database or storage volume. The isolated Docker stack has its own database and storage volumes.
 
 Deleting installed environments (`node_modules`, `.venv`), model weights, PostgreSQL volumes, or application storage is not routine cache cleanup. Environments can be reinstalled; weights must be downloaded again; database/media deletion can permanently remove user data. Tool caches such as Vite, pytest, Ruff, and Python bytecode are rebuildable, but may be active while a process is running. This README does not prescribe a blanket cache purge or claim any disk space has been reclaimed.
+
+### Current Ubuntu production data and disk layout
+
+The public site `https://remix.mingjie-hanlu.com` is served by the Ubuntu production Compose overlay described below. Production uses database `remix_backend_production` and named volume `audio-remix-lab-ubuntu-gpu_backend_production_storage`; the older isolated database and volume remain separate. The app, ACE-Step model files, PostgreSQL, and tunnel connector are on Ubuntu, so Mac availability and its local model cache are not runtime dependencies.
+
+The Ubuntu host has a 256 GB SSD mounted as `/` (about 238 GiB); ACE-Step checkpoints are in the persistent `acestep-cache/checkpoints/` directory on that SSD. About 149 GiB was free on `/` at the time of inspection. A 1 TB HDD is present but has not been partitioned or mounted, and a 512 GB device was not identified. Production media remains in the Docker named volume. This deployment did not partition, format, or mount that 1 TB HDD, or move models or media onto it; public business data was copied to the production database and media volume on the Ubuntu system disk. Check current free space before planning a model or media move; such a move must preserve the database's absolute output paths and all referenced files.
+
+The source Mac snapshot is a pre-cutover copy. After users create or update data on Ubuntu, switching DNS or the tunnel back to the old Mac would serve stale database and media state and could lose post-cutover writes. A rollback that preserves those writes requires a coordinated backup/restore or reverse data migration; stopping the Ubuntu stack alone does not make the Mac copy current.
 
 ## Configuration and security
 
@@ -178,9 +186,40 @@ docker compose --env-file .env.backend -f docker-compose.backend.yml down
 
 `stop`/`down` do not remove named volumes. Do not add `-v` to `down` unless you intentionally want to permanently remove this isolated stack's database and media. Rebuild the app with `up -d --build`; back up the PostgreSQL and storage volumes before important updates. Do not publish port 8000 from this stack or repoint it to a pre-existing database.
 
-## Ubuntu GPU trial (separate host and data)
+## Ubuntu deployment and GPU validation
 
-`docker-compose.ubuntu-gpu.yml` defines an isolated Ubuntu project. It leaves the Mac/native ACE setup and Linux CPU Compose file unchanged. The app publishes only `127.0.0.1:18000`; PostgreSQL and ACE-Step have no published host ports. Database and media use new named volumes, and models are mounted from `acestep-cache/checkpoints/`. Do not connect this profile to an existing database, media directory, or online Mac service.
+### Public production operations
+
+The public hostname `https://remix.mingjie-hanlu.com` resolves through the existing Cloudflare Named Tunnel to the Ubuntu host. Cloudflare Tunnel, the app/API, PostgreSQL, and ACE-Step run on that host; the app origin is `127.0.0.1:18000`. The previous Mac API and tunnel connector have been stopped. The production deployment uses the base `docker-compose.ubuntu-gpu.yml` plus `docker-compose.ubuntu-production.yml`; do not run the isolated profile commands below against production.
+
+Connect to `frank@frank-ubuntu.local`, then define this helper in the shell to select only the production Compose stack. It uses the native Docker Engine socket and reads private env files without printing their contents:
+
+```bash
+cd /home/frank/audio-remix-lab-ubuntu
+dc() {
+  /usr/bin/docker --host unix:///var/run/docker.sock compose \
+    --env-file .env.ubuntu-gpu \
+    --env-file /home/frank/.config/audio-remix-lab/production-compose.env \
+    -f docker-compose.ubuntu-gpu.yml \
+    -f docker-compose.ubuntu-production.yml "$@"
+}
+```
+
+The private production files are under `/home/frank/.config/audio-remix-lab/` with directory mode `700` and file mode `600`; do not copy their contents into Git or logs. The production overlay additionally reads `production-app.env` and the read-only Cloudflare config from that directory. Check status, health, and recent logs with:
+
+```bash
+dc ps
+curl --fail http://127.0.0.1:18000/api/health
+dc logs --tail=100 backend cloudflared
+```
+
+To restart the backend with its current environment, run `dc restart backend`. If private environment values changed, recreate the backend so Compose loads them again: `dc up -d --no-deps --force-recreate backend`. Start or recreate the public tunnel connector with `dc --profile public up -d cloudflared`. Services use `restart: unless-stopped`; the native Docker Engine is enabled at boot. The Ubuntu host is configured not to suspend. A host reboot has not been exercised as an end-to-end test.
+
+The deployed backend uses `COOKIE_SECURE=true`. Cloudflare's standard proxy request-body limit is 100 MB while the application limit is 128 MiB, so uploads routed through the public hostname may be limited by Cloudflare. The GTX 1070 host has 16 GiB RAM; observed ACE-Step cgroup peak was about 13.2 GiB including file cache and initialization. Short 10- and 30-second paths were exercised; this does not establish capacity for long tracks or concurrent generation. Keep an eye on free SSD space and container health. Do not attach a second connector that routes traffic to a different database.
+
+### Separate Ubuntu GPU profile setup and validation
+
+`docker-compose.ubuntu-gpu.yml` is the base Ubuntu project used by the production overlay and can also be run separately for isolated evaluation. The app publishes only `127.0.0.1:18000`; PostgreSQL and ACE-Step have no published host ports. The production overlay selects a distinct database and storage volume. Do not connect the isolated profile to production's database, media volume, or public tunnel.
 
 The native Docker Engine and NVIDIA Container Toolkit bootstrap is explicit. On the Ubuntu host, review `scripts/deploy/ubuntu-gpu/bootstrap-native-docker.sh`, then run it in a local interactive terminal if installation is needed:
 
@@ -211,15 +250,15 @@ docker --host unix:///var/run/docker.sock compose --project-name audio-remix-lab
 docker --host unix:///var/run/docker.sock compose --project-name audio-remix-lab-ubuntu-gpu -f docker-compose.ubuntu-gpu.yml --env-file .env.ubuntu-gpu up -d backend
 ```
 
-Compose waits for ACE-Step health before starting the backend. Keep access local through an SSH port forward; do not change the Mac site, DNS, Cloudflare, or production routing. Stop the project with `compose ... down` and no `-v` to retain its independent data volumes.
+Compose waits for ACE-Step health before starting the backend. For isolated evaluation, keep access local through an SSH port forward. Stopping this separate profile with `compose ... down` and no `-v` retains its own data volumes.
 
 **Ubuntu validation:** On Ubuntu 26.04.1 with an i7-7700, 16 GiB RAM, and GTX 1070 8 GiB, the native Engine/NVIDIA runtime detected the GPU. FP16 and FP32 CUDA kernels and the real MP3 codec path passed. ACE-Step initialized the turbo model with CPU offload and loaded the 0.6B PyTorch LM on CPU in FP32. The cold 30-second cover flow passed end to end in 27.63 seconds and returned a finite 30-second MP3; media ownership, range streaming, SSE, and privacy checks passed. A separate 10-second CoT text-to-music request exercised the CPU LM forward: its phase-one metadata stage took 25.62 seconds and the request returned a finite 10-second MP3 in 38.43 seconds.
 
-A transient `/query_result` `httpx.ReadError` was observed during cover validation while ACE later completed the upstream job. The backend now retries that read-only poll at most once within the same 300-second poll deadline; a second read error and all other errors still fail normally. The lower-level cause of the connection interruption is undetermined. The existing loop remains 120 polls with 5-second intervals; this is not a strict wall-clock deadline. The ACE container's observed cgroup memory peak was about 13.2 GiB (14.15 GB), including file cache and initialization rather than process RSS alone, leaving little memory headroom on a 16 GiB host. This stack remains separate from the Mac site, database, DNS, Cloudflare, and production routing.
+A transient `/query_result` `httpx.ReadError` was observed during cover validation while ACE later completed the upstream job. The backend now retries that read-only poll at most once within the same 300-second poll deadline; a second read error and all other errors still fail normally. The lower-level cause of the connection interruption is undetermined. The existing loop remains 120 polls with 5-second intervals; this is not a strict wall-clock deadline. The ACE container's observed cgroup memory peak was about 13.2 GiB (14.15 GB), including file cache and initialization rather than process RSS alone, leaving little memory headroom on a 16 GiB host.
 
 ### Engine and validation limits
 
-The following describes the separate Linux CPU Docker profile, not the Ubuntu GPU trial above. It calls ACE-Step on the Mac host at `host.docker.internal:8001`. ACE-Step should remain a native process on Apple Silicon when MLX acceleration is needed; macOS containers cannot use Metal. The route was verified from Docker Desktop by checking the ACE-Step health endpoint. The ARM64 image build completed with Node 24 UI assets and Python 3.12 backend. `pip check` passed; the image contains CPU-only PyTorch (`torch.version.cuda` is `None`) and MLX CPU packages, with no CUDA/NVIDIA distributions. MLX `0.32.4`, `mlx-cpu 0.32.4`, and `mlx-audio-io 1.3.24` imported, and MLX CPU array evaluation passed. Independent verification passed 58 runtime/API gates and 18 tests against a fresh isolated PostgreSQL database. With network access disabled, a synthetic 22050 Hz mono WAV was decoded and resampled to 44100 Hz through the Linux lyrics path; a reduced HTDemucs with random weights exercised its actual CPU forward, STFT/ISTFT, and RMS path. No MLX core was imported in this standalone acoustic probe, and no model weights were downloaded. Pretrained Demucs separation, output quality/speed for the CPU profile, and the lyric-structuring endpoint remain unvalidated. In the isolated stack, PostgreSQL became healthy, Alembic reached revision `9f0a7c1d2e43`, and the explicit seed inserted eight presets. API/SPA health, login, song creation, WAV upload/storage, and a temporary synthetic MP3 media response with HTTP Range 206 were exercised; temporary test user, records, and files were removed.
+The following describes the separate Linux CPU Docker profile, not the Ubuntu GPU deployment above. It calls ACE-Step on the Mac host at `host.docker.internal:8001`. ACE-Step should remain a native process on Apple Silicon when MLX acceleration is needed; macOS containers cannot use Metal. The route was verified from Docker Desktop by checking the ACE-Step health endpoint. The ARM64 image build completed with Node 24 UI assets and Python 3.12 backend. `pip check` passed; the image contains CPU-only PyTorch (`torch.version.cuda` is `None`) and MLX CPU packages, with no CUDA/NVIDIA distributions. MLX `0.32.4`, `mlx-cpu 0.32.4`, and `mlx-audio-io 1.3.24` imported, and MLX CPU array evaluation passed. Independent verification passed 58 runtime/API gates and 18 tests against a fresh isolated PostgreSQL database. With network access disabled, a synthetic 22050 Hz mono WAV was decoded and resampled to 44100 Hz through the Linux lyrics path; a reduced HTDemucs with random weights exercised its actual CPU forward, STFT/ISTFT, and RMS path. No MLX core was imported in this standalone acoustic probe, and no model weights were downloaded. Pretrained Demucs separation, output quality/speed for the CPU profile, and the lyric-structuring endpoint remain unvalidated. In the isolated stack, PostgreSQL became healthy, Alembic reached revision `9f0a7c1d2e43`, and the explicit seed inserted eight presets. API/SPA health, login, song creation, WAV upload/storage, and a temporary synthetic MP3 media response with HTTP Range 206 were exercised; temporary test user, records, and files were removed.
 ## Tests and database safety
 
 **Do not run the generic `make test` or `pytest` command against a database that may contain user data.** Backend test setup has an autouse fixture that recreates the configured test database, applies migrations, then truncates its tables before each test. `tests/conftest.py` imports `tests._env` first; that module sets test application settings before app modules load. Any alternate runner must preserve that import order.
